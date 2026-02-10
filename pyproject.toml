@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling>=1.21.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "super-mcp"
+version = "0.1.0"
+description = "Universal MCP platform — canonical skills, verified tools, games, and one-command onboarding for any AI agent"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Super-MCP Contributors" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+dependencies = [
+    "textual>=1.0.0",
+    "rich>=13.9.0",
+    "pydantic>=2.10.0",
+    "httpx>=0.28.0",
+    "authlib>=1.4.0",
+    "cryptography>=44.0.0",
+    "structlog>=24.4.0",
+    "click>=8.1.0",
+    "toml>=0.10.2",
+    "aiofiles>=24.1.0",
+    "orjson>=3.10.0",
+    "jinja2>=3.1.0",
+    "prometheus-client>=0.21.0",
+    "opentelemetry-api>=1.29.0",
+    "opentelemetry-sdk>=1.29.0",
+    "xxhash>=3.5.0",
+    "msgpack>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+]
+notion = [
+    "notion-client>=2.3.0",
+]
+all = [
+    "super-mcp[dev,notion]",
+]
+
+[project.scripts]
+super-mcp = "src.cli:main"
+smcp = "src.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/super-mcp/super-mcp"
+Documentation = "https://super-mcp.dev/docs"
+Repository = "https://github.com/super-mcp/super-mcp"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "DTZ", "T10", "ICN", "PIE", "PT", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA"]
+ignore = ["S101", "S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks integration tests",
+    "e2e: marks end-to-end tests",
+]
