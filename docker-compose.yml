@@ -1,0 +1,84 @@
+# ── Super-MCP Docker Compose ────────────────────────
+# One-command deployment:
+#   docker compose up -d
+# ────────────────────────────────────────────────────
+
+services:
+  super-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: super-mcp
+    restart: unless-stopped
+    ports:
+      - "9090:9090"          # Prometheus metrics
+    volumes:
+      - smcp-data:/app/data  # Persistent data
+      - ./skills:/app/skills:ro  # Skills directory (read-only)
+    env_file:
+      - .env
+    environment:
+      - SMCP_ENV=production
+      - SMCP_LOG_LEVEL=INFO
+      - SMCP_LOG_FORMAT=json
+    healthcheck:
+      test: ["CMD", "python", "-c", "from src.kernel.kernel import Kernel; print('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  # ── Optional: PostgreSQL ────────────────────────
+  # Uncomment for production database support
+  #
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: smcp-postgres
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   environment:
+  #     POSTGRES_DB: super_mcp
+  #     POSTGRES_USER: smcp
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U smcp -d super_mcp"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+  # ── Optional: Redis ─────────────────────────────
+  # Uncomment for caching and task queues
+  #
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: smcp-redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redisdata:/data
+  #   command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
+volumes:
+  smcp-data:
+    driver: local
+  # pgdata:
+  #   driver: local
+  # redisdata:
+  #   driver: local
