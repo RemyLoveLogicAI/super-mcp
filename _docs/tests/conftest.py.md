@@ -6,8 +6,8 @@
   "doc_type": "file_overview",
   "file_path": "tests/conftest.py",
   "source_hash": "0a8414513e75de67474a495968336058411f8033fa1fa81bd11cd32fe31ec143",
-  "last_updated": "2026-02-13T16:48:17.243030+00:00",
-  "tokens_used": 67961,
+  "last_updated": "2026-02-13T16:48:35.370242+00:00",
+  "tokens_used": 64494,
   "complexity_score": 2,
   "estimated_review_time_minutes": 10,
   "external_dependencies": [
@@ -42,9 +42,11 @@
 
 ## Overview
 
-This module defines a suite of pytest fixtures used by the Super-MCP project's tests. It includes fixtures that create and manage an asyncio event loop for the entire test session, ephemeral temporary directories for file-based artifacts, pre-populated skill files in a temporary skills directory, and an exports directory. The file also supplies small, concrete sample domain objects (SkillDefinition, ToolDefinition, Event, Checkpoint, Artifact, Session) with fixed fields so tests can depend on consistent input instances. Several fixtures return fresh in-memory components used by the system under test: EventBus, SkillRegistry, ToolRegistry, SafetyLayer, Kernel (booted and shut down around each test), GameState, and GameRunner. The module also provides AsyncMock-based event callbacks and a canned mock LLM response payload for testing integrations.
+This module centralizes reusable pytest fixtures for the Super-MCP project so tests can compose deterministic, isolated test state. It supplies filesystem fixtures (a session-scoped tmp directory, a pre-populated skills directory, per-test export/artifact dirs), a session-scoped asyncio event loop, and lightweight instances of domain types (SkillDefinition, ToolDefinition, Event, Checkpoint, Artifact, Session). These fixtures let unit and integration tests get concrete, ready-to-use objects without duplicating construction logic.
 
-In addition to single-instance fixtures, the file includes factory-style fixtures that return callables used at test time to create multiple resources: make_skills registers N generated SkillDefinition instances into the SkillRegistry (default count=5) and returns the created list; make_tools similarly registers N ToolDefinition instances into the ToolRegistry; make_events returns a list of Event instances (default count=10) and accepts an optional EventTopic. The kernel fixture is async: it constructs Kernel(), awaits boot(), yields the instance to the test, and ensures await k.shutdown() after the test. The temporary-directory fixtures rely on tempfile.TemporaryDirectory and pathlib.Path to ensure test isolation; skills_dir writes three markdown files with YAML front matter and simple content, enabling tests that read skill files from disk. Overall, this file centralizes test setup/teardown and promotes reuse of consistent test data and runtime components across the test suite.
+Higher-level fixtures provide fresh runtime components created for each test: an EventBus with a bounded buffer, per-test SkillRegistry and ToolRegistry instances, and a SafetyLayer. An async kernel fixture boots a Kernel instance before yielding and ensures shutdown after the test, enabling integration-style tests that require a running kernel. Factory helpers (make_skills, make_tools, make_events) deterministically generate and register multiple items in registries, returning the created lists for assertions.
+
+Design choices emphasize explicit composition and test isolation: Path objects are returned for filesystem fixtures, tempfile.TemporaryDirectory ensures teardown, AsyncMock is used for awaitable callback mocks, and registries are created per-test to avoid cross-test state. The module keeps fixtures small and composable so tests can override or parametrize pieces independently.
 
 ## Dependencies
 
@@ -52,25 +54,25 @@ In addition to single-instance fixtures, the file includes factory-style fixture
 
 | Module | Usage |
 | --- | --- |
-| `pytest` | import pytest — provides the pytest.fixture decorator used on every fixture defined in this file (all functions are pytest fixtures). |
+| `pytest` | import pytest — supplies the @pytest.fixture decorator and fixture machinery used throughout the file. |
 
 ### Internal Dependencies
 
 | Module | Usage |
 | --- | --- |
-| `__future__` | from __future__ import annotations — enables postponed evaluation of annotations, allowing the module to use forward references and simplify type hints for fixtures (see type hints like AsyncGenerator, Generator and return types for fixtures). |
-| `asyncio` | import asyncio — used to create a new event loop for the session-scoped event_loop fixture via asyncio.new_event_loop(). |
-| `tempfile` | import tempfile — used by tmp_dir fixture to create ephemeral TemporaryDirectory instances (tempfile.TemporaryDirectory) that are converted to pathlib.Path for tests that need isolated filesystem locations. |
-| `pathlib` | from pathlib import Path — Path is used throughout to build and return filesystem paths (tmp_dir, skills_dir, exports_dir) and to write sample skill markdown files. |
-| `typing` | from typing import AsyncGenerator, Generator — these types are used in fixture signatures for static typing (e.g., kernel: AsyncGenerator[Kernel, None], tmp_dir: Generator[Path, None, None]). |
-| [unittest.mock](../unittest/mock.md) | from unittest.mock import AsyncMock — AsyncMock is used to provide an asynchronous mock callback suitable for subscribing to the EventBus in tests (mock_event_callback fixture). |
-| [src.kernel.types](../src/kernel/types.md) | from src.kernel.types import (Artifact, Checkpoint, EntityID, Event, EventTopic, Session, SessionState, SkillDefinition, ToolDefinition, ToolHealth) — these type and data classes are instantiated by many fixtures (sample_skill, sample_tool, sample_event, sample_checkpoint, sample_artifact, sample_session) and used in factory helpers (make_skills/make_tools/make_events). |
-| [src.kernel.event_bus](../src/kernel/event_bus.md) | from src.kernel.event_bus import EventBus — EventBus is instantiated in the event_bus fixture with buffer_size=1000 to provide an in-memory event bus for tests. |
-| [src.kernel.registry](../src/kernel/registry.md) | from src.kernel.registry import SkillRegistry, ToolRegistry — used to create fresh registries in skill_registry and tool_registry fixtures and to register generated items inside make_skills and make_tools factory fixtures. |
-| [src.kernel.safety](../src/kernel/safety.md) | from src.kernel.safety import SafetyLayer — SafetyLayer() is instantiated and returned by the safety_layer fixture to allow tests to use the system's safety layer with default rules. |
-| [src.kernel.kernel](../src/kernel/kernel.md) | from src.kernel.kernel import Kernel — Kernel is used in the async kernel fixture: the fixture constructs Kernel(), awaits k.boot(), yields the kernel to the test, and ensures await k.shutdown() after the test completes. |
-| [src.games.engine.state](../src/games/engine/state.md) | from src.games.engine.state import GameState — GameState(max_undo=50) is returned by the game_state fixture to provide a fresh game state instance for tests. |
-| [src.games.engine.runner](../src/games/engine/runner.md) | from src.games.engine.runner import GameRunner — GameRunner() is returned by the game_runner fixture to provide a runner with no games registered for tests that exercise game-running logic. |
+| `__future__` | from __future__ import annotations — enables postponed evaluation of annotations so type hints work without runtime imports. |
+| `asyncio` | import asyncio — used to create a fresh event loop for session-scoped async tests via asyncio.new_event_loop(). |
+| `tempfile` | import tempfile — used to create temporary directories (TemporaryDirectory) for filesystem isolation in tests. |
+| `pathlib` | from pathlib import Path — Path objects are returned by filesystem fixtures and used to create/write sample files. |
+| `typing` | from typing import AsyncGenerator, Generator — used only in function annotations for fixture signatures. |
+| [unittest.mock](../unittest/mock.md) | from unittest.mock import AsyncMock — provides awaitable mock callbacks suitable for EventBus subscriptions in tests. |
+| [src.kernel.types](../src/kernel/types.md) | from src.kernel.types import (Artifact, Checkpoint, EntityID, Event, EventTopic, Session, SessionState, SkillDefinition, ToolDefinition, ToolHealth) — used to construct sample domain objects consumed by tests. (EntityID is imported but not referenced in this file.) |
+| [src.kernel.event_bus](../src/kernel/event_bus.md) | from src.kernel.event_bus import EventBus — EventBus(buffer_size=1000) is instantiated to provide an isolated event bus for tests. |
+| [src.kernel.registry](../src/kernel/registry.md) | from src.kernel.registry import SkillRegistry, ToolRegistry — registries are created per-test; factory fixtures call register(...) to populate them. |
+| [src.kernel.safety](../src/kernel/safety.md) | from src.kernel.safety import SafetyLayer — SafetyLayer() is returned by a fixture for tests that need safety checks. |
+| [src.kernel.kernel](../src/kernel/kernel.md) | from src.kernel.kernel import Kernel — the async kernel fixture boots a Kernel instance (await k.boot()) before yielding and ensures await k.shutdown() after tests complete. |
+| [src.games.engine.state](../src/games/engine/state.md) | from src.games.engine.state import GameState — GameState(max_undo=50) is instantiated by the game_state fixture for game-related tests. |
+| [src.games.engine.runner](../src/games/engine/runner.md) | from src.games.engine.runner import GameRunner — GameRunner() is returned by a fixture to provide a runner for game tests. |
 
 ## 📁 Directory
 
@@ -78,33 +80,31 @@ This file is part of the **tests** directory. View the [directory index](_docs/t
 
 ## Architecture Notes
 
-- Uses pytest fixture patterns to centralize and reuse test setup: fixtures provide both single-object instances (e.g., sample_skill) and factory-callable fixtures (make_skills, make_tools, make_events) which return functions that create multiple objects on demand.
-- Asynchronous lifecycle handling: the event_loop fixture creates a session-scoped asyncio event loop via asyncio.new_event_loop() and closes it after the test session; the kernel fixture is async and explicitly awaits Kernel.boot() before yielding and Kernel.shutdown() after yielding to ensure proper startup/shutdown sequencing in async tests.
-- Filesystem isolation: tmp_dir uses tempfile.TemporaryDirectory to ensure tests have an isolated directory; skills_dir populates a 'skills' subdirectory with three markdown files (code-review.md, security-audit.md, data-analysis.md) containing YAML front matter and a simple body, enabling tests that exercise file-based skill loading.
-- Minimal error handling in fixtures: the fixtures rely on pytest and context managers (TemporaryDirectory) to handle cleanup. Tests depending on kernel or external resources should handle potential boot/shutdown failures themselves or assert expected exceptions.
-- Registries and mutability: make_skills and make_tools register generated definitions into the provided registries (SkillRegistry, ToolRegistry), so tests that call these factories will mutate shared registry fixtures. Tests should be aware of fixture scope and isolation to avoid cross-test contamination.
+- Small, composable pytest fixtures form the foundation; higher-level fixtures build on these to provide ready-to-use test state.
+- Async resources follow pytest async patterns: a session-scoped event loop and an async kernel fixture that boots/shuts down the Kernel to avoid leaked resources.
+- Filesystem isolation uses tempfile.TemporaryDirectory and pathlib.Path objects so tests can manipulate files without touching the repo.
+- Registries and EventBus are provided per-test to prevent cross-test interference; factory fixtures intentionally call register(...) to create predictable side effects for tests.
 
 ## Usage Examples
 
-### Testing a component that needs a booted Kernel and an EventBus subscription
+### Boot a Kernel and perform integration-style operations
 
-In an async pytest test, declare kernel and event_bus as parameters. The kernel fixture will await Kernel.boot() before the test runs and will shut it down after the test completes. Use event_bus (an EventBus instance created with buffer_size=1000) to subscribe mock_event_callback (an AsyncMock fixture) and assert that published Event instances (for example, those created by make_events()) are delivered. Sequence: test setup uses kernel (already booted), event_bus.subscribe(mock_event_callback), publish one or more Event instances, await any asynchronous processing, then assert mock_event_callback.await_count or call arguments. After test completes, kernel.shutdown() is awaited automatically by the fixture teardown.
+A test receives the async 'kernel' fixture which awaits Kernel().boot() before the test runs and ensures Kernel().shutdown() afterwards. Tests can interact with the running kernel to register components or publish events, relying on the fixture to manage lifecycle.
 
-### Registering multiple generated skills for unit tests that exercise the SkillRegistry
+### Create and register multiple generated skills for registry-dependent tests
 
-In a test, use the make_skills fixture (a factory callable). Call skills = make_skills(3) to create and register three SkillDefinition objects. Each generated SkillDefinition has name f'skill-{i}', description, version '1.0.0', tags ['generated', f'batch-{i % 3}'], and empty parameters/examples. The factory calls skill_registry.register(s) for each created skill, so afterward tests can query skill_registry to verify registration and lookup behavior. Cleanup depends on fixture scopes: skill_registry fixture returns a fresh SkillRegistry instance per test (default pytest function scope), so no explicit teardown is required.
+The make_skills factory fixture constructs N SkillDefinition objects, registers each via skill_registry.register(...), and returns the created list so tests can assert registry state or exercise modules that read from the registry.
 
-### Working with a temporary skills directory on disk
+### Use a temporary skills directory populated with markdown files
 
-Use the skills_dir fixture to obtain a Path to a temporary directory containing three sample markdown files: code-review.md, security-audit.md, and data-analysis.md. Each file contains YAML front matter with name, version, and tags followed by a heading and body. A test that loads skill files from disk can point its loader at skills_dir and assert that the loader reads the files and parses name/version/tags from the front matter. The tmp_dir fixture ensures the directory is removed after the test via tempfile.TemporaryDirectory context manager.
+The skills_dir fixture writes sample markdown skill files (e.g., code-review.md, security-audit.md) into a tmp_dir/skills directory. Tests can point loaders at this directory to verify parsing and registration without relying on repository files.
 
 ## Maintenance Notes
 
-- Kernel lifecycle: the kernel fixture awaits Kernel.boot() and Kernel.shutdown(); if Kernel.boot()/shutdown() change their signatures or become blocking long-running operations, tests may need to adapt (for example by increasing timeouts or making boot/shutdown configurable/mocked).
-- Event loop management: event_loop fixture creates a new event loop for the whole test session. If individual tests need their own loop or rely on the default pytest-asyncio loop policy, adjust scope or remove this fixture to avoid conflicts.
-- Registry mutation: make_skills and make_tools register entries into the provided registries. If test suite adds long-lived registries (e.g., session scope), consider clearing registries between tests to avoid cross-test interference.
-- Hard-coded sample data: many fixtures return concrete sample values (e.g., sample_artifact.content, sample_event.payload). If tests require variations, consider adding additional factory fixtures or parameterizing existing ones instead of editing these common fixtures.
-- Dependency updates: pytest is an external dependency; ensure tests run with a pytest version supporting the fixture features used. Internal API changes in src.kernel.* or src.games.* (constructor signatures, method names) will break these fixtures and require updates here.
+- The session-scoped event_loop can cause cross-test interactions if tests mutate loop state; consider narrowing scope if isolation issues appear.
+- EntityID is imported from src.kernel.types but not used; remove the unused import to avoid linter warnings.
+- Kernel.boot()/shutdown() timings affect tests that use the kernel fixture; consider providing a lightweight mock kernel for fast unit tests if needed.
+- Factory fixtures mutate registries; if registries gain global state, tests may become flaky—keep registries instance-scoped where possible.
 
 ---
 
@@ -129,80 +129,81 @@ Use the skills_dir fixture to obtain a Path to a temporary directory containing 
 ### Signature
 
 ```python
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]
+def event_loop()
 ```
 
 ### Description
 
-Provide (yield) a newly created asyncio event loop and then close it after use.
+Create a new asyncio event loop, yield it to the caller, and then close it after use.
 
 
-This function creates a new asyncio event loop using asyncio.new_event_loop(), yields that loop to the caller, and after the caller resumes the generator it closes the loop by calling loop.close(). The implementation is a simple generator (not an async function). There are no explicit exception handlers or additional logic.
+This function constructs a new asyncio event loop by calling asyncio.new_event_loop(), yields that loop to the caller (it's implemented as a generator), and once the generator is resumed after the yield it closes the loop by calling loop.close(). The implementation contains no parameters and performs no other logic.
 
 ### Returns
 
-**Type:** `Generator[asyncio.AbstractEventLoop, None, None]`
+**Type:** `Generator that yields an asyncio event loop (the function itself yields, does not return)`
 
-Yields a newly created asyncio event loop object to the caller. The generator will execute loop.close() when resumed after the yield.
+When the generator is iterated (or used as a fixture), it yields an asyncio event loop instance created by asyncio.new_event_loop(). After the consumer resumes the generator to finish it, the function closes the loop and the generator completes.
 
 
 **Possible Values:**
 
-- A newly created instance of an asyncio event loop (e.g., asyncio.BaseEventLoop / platform-specific loop implementation) yielded via the generator
-- StopIteration after the generator completes cleanup when resumed
+- An instance of asyncio.AbstractEventLoop (concrete event loop object returned by asyncio.new_event_loop())
+- Generator completion (None) after loop.close() is executed
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Creates a new asyncio event loop by calling asyncio.new_event_loop()
-- Closes the created event loop by calling loop.close() when the generator continues after the yield
+- Calls asyncio.new_event_loop() which allocates/creates a new event loop object
+- Calls loop.close() which closes the created event loop and releases associated resources
 
 ### Usage Examples
 
-#### Manual use of the generator to obtain an event loop and run cleanup
+#### Use as a pytest-style generator fixture in tests/conftest.py
+
+```python
+def test_something(event_loop):
+    # event_loop is the yielded asyncio loop
+    # schedule coroutines or run async tests using this loop
+    result = event_loop.run_until_complete(some_coroutine())
+    assert result == expected
+```
+
+Demonstrates consuming the yielded event loop to run coroutines in tests. (The function itself yields the loop and closes it after test finishes.)
+
+#### Direct iteration of the generator (illustrative; generator intended to be used by a framework)
 
 ```python
 gen = event_loop()
-loop = next(gen)
-# use loop for synchronous test setup or to run coroutines
-# ...
-# resume the generator to perform cleanup (which calls loop.close())
+loop = next(gen)  # obtains the new event loop
+# use loop
 try:
-    next(gen)
-except StopIteration:
-    pass
+    loop.run_until_complete(coro())
+finally:
+    try:
+        next(gen)  # resume generator so it executes loop.close()
+    except StopIteration:
+        pass
 ```
 
-Obtain the loop by advancing the generator once; after using the loop, advance the generator again to let the function execute the post-yield code that closes the loop. The second next() runs loop.close() and finishes the generator.
-
-#### Typical pytest fixture usage (conftest.py context)
-
-```python
-@pytest.fixture(scope='session')
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-```
-
-When used as a pytest fixture, pytest handles advancing the generator and running the cleanup after tests that depend on the fixture complete. (The shown decorator is not present in the function body but illustrates the common surrounding usage in tests/conftest.py.)
+Shows how the generator yields the loop and requires resuming to execute the final close call.
 
 ### Complexity
 
-O(1) time and O(1) space: the function performs a constant number of operations and allocates a single event loop object.
+Time complexity: O(1) (creates and closes a single event loop). Space complexity: O(1) (allocates a single event loop object).
 
 ### Related Functions
 
 - `asyncio.new_event_loop` - Called by this function to create the event loop
-- `loop.close` - Called by this function to close the created event loop
+- `loop.close` - Called by this function to close the event loop after yielding
 
 ### Notes
 
-- This is a generator function (uses yield). To ensure loop.close() runs, callers must resume the generator after the yield (e.g., by calling next(gen) again) or rely on a framework (such as pytest fixture handling) that advances the generator to perform cleanup.
-- There are no explicit raise statements in the implementation; any exceptions would originate from the called asyncio functions but are not handled here.
-- The code snippet assumes asyncio is available and imported in the module scope (not shown in the snippet).
+- The function is implemented as a generator that yields once and then performs cleanup after the yield resumes.
+- No decorator is present in the shown code; in a pytest conftest.py this pattern is commonly used as a fixture (e.g., @pytest.fixture(scope='session') above it), but such a decorator is not present in the provided implementation and is not assumed.
+- No explicit exception handling is implemented; any exceptions raised by asyncio.new_event_loop() or loop.close() will propagate to the caller.
 
 ---
 
@@ -220,77 +221,57 @@ def tmp_dir() -> Generator[Path, None, None]
 
 ### Description
 
-Provide a generator that yields a pathlib.Path pointing to a newly created temporary directory created via tempfile.TemporaryDirectory.
+Provide a temporary filesystem directory path to callers by yielding a pathlib.Path while ensuring the underlying temporary directory is created and (when the context exits) automatically cleaned up.
 
 
-This function is a generator that creates a temporary directory using tempfile.TemporaryDirectory with prefix 'smcp_test_'. Inside the context manager it yields a Path object (from pathlib.Path) constructed from the temporary directory path string. The TemporaryDirectory context manager ensures the directory exists for the duration while the generator is paused at the yield; when the generator is finalized (context is exited), the temporary directory is removed by tempfile.TemporaryDirectory's cleanup.
+This function creates a temporary directory using tempfile.TemporaryDirectory with a prefix of 'smcp_test_' and yields a pathlib.Path object pointing to that directory. The TemporaryDirectory context manager ensures the directory is created before yielding and will be removed when the context manager exits. The function itself is a generator that yields exactly one Path value and relies on the with-statement to perform cleanup once the generator's consumer causes the context to exit (in typical usage as a pytest generator fixture, pytest takes care of advancing and finalizing the generator).
 
 ### Returns
 
 **Type:** `Generator[Path, None, None]`
 
-A generator that yields a single pathlib.Path referring to the created temporary directory. The directory exists while the generator is paused at the yield; cleanup happens when the generator/context is exited.
+A generator that yields a single pathlib.Path representing the path of the created temporary directory.
 
 
 **Possible Values:**
 
-- A pathlib.Path object pointing to an existing temporary directory (string path wrapped in Path) while the generator is active
-- No value (generator completes) after the yield and cleanup; the directory is removed by the context manager
-
-### Raises
-
-| Exception | Condition |
-| --- | --- |
-| `OSError` | If tempfile.TemporaryDirectory fails to create the temporary directory (propagated from the underlying call) |
+- A pathlib.Path object pointing to an existing temporary directory created by tempfile.TemporaryDirectory while the context is active
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Creates a temporary directory on the filesystem via tempfile.TemporaryDirectory
-- Deletes (cleans up) the temporary directory when the generator/context is exited
+- Creates a temporary directory on the filesystem using tempfile.TemporaryDirectory
+- Removes (deletes) that temporary directory when the TemporaryDirectory context manager exits
 
 ### Usage Examples
 
-#### Direct iteration over the generator to obtain a temporary directory path and ensure cleanup when done
+#### Use as a pytest generator fixture to provide a temporary directory for tests
 
 ```python
-gen = tmp_dir()
-path = next(gen)  # yields a pathlib.Path to the created temp dir
-# use path for filesystem operations while directory exists
-try:
-    pass  # perform work using path
-finally:
-    # finalizing the generator (or letting it go out of scope) triggers exit of the context and cleanup
-    gen.close()
+def test_something(tmp_dir):
+    # tmp_dir is a pathlib.Path pointing to a temporary directory
+    (tmp_dir / 'file.txt').write_text('data')
+    assert (tmp_dir / 'file.txt').exists()
 ```
 
-Demonstrates getting the Path from the generator and ensuring the TemporaryDirectory context is exited (gen.close()) so the directory is removed.
-
-#### Using the generator as a pytest-style fixture (typical placement under tests/conftest.py)
-
-```python
-# In pytest this function is commonly used as a fixture that yields a Path to a temporary directory
-# test receives the Path and the directory is removed after the test finishes
-```
-
-Shows the typical test usage pattern: the yielded Path is available during the test and is cleaned up automatically when the fixture/generator finalizes.
+Demonstrates typical use in tests where the fixture yields a Path; the temporary directory is available during the test and is cleaned up afterwards.
 
 ### Complexity
 
-Time complexity: O(1) to create and yield the path (cost dominated by OS call to create directory). Space complexity: O(1) additional Python memory; filesystem storage proportional to any files created by the caller inside the temporary directory.
+O(1) time and O(1) auxiliary space: creating the directory is an OS operation with constant-time overhead relative to this function's code; memory usage is constant for the Path object and generator frame.
 
 ### Related Functions
 
-- `tempfile.TemporaryDirectory` - This function directly uses tempfile.TemporaryDirectory as the mechanism to create and clean up the temporary directory.
-- `pathlib.Path` - Path is used to wrap the temporary directory string returned by TemporaryDirectory before yielding.
+- `tempfile.TemporaryDirectory` - Called by this function; provides the underlying temporary directory lifecycle management.
+- `pathlib.Path` - Used to convert the temporary directory path string returned by TemporaryDirectory into a Path object returned to callers.
 
 ### Notes
 
-- The function yields once and relies on the TemporaryDirectory context manager to perform cleanup when the generator completes or is closed.
-- There is no explicit decorator in the shown implementation; if intended for pytest fixtures it would normally be decorated with @pytest.fixture in conftest.py.
-- If the generator is not closed or exhausted, the TemporaryDirectory cleanup will not run immediately; relying on garbage collection to finalize may delay cleanup.
+- This function is implemented as a generator that yields once; frameworks like pytest that treat generator functions in conftest.py as fixtures will advance and finalize the generator so the TemporaryDirectory cleanup runs after the test.
+- If used directly outside a fixture framework, callers must ensure the generator is properly finalized to trigger cleanup (e.g., use it as a fixture or manually close the generator).
+- No explicit exception handling is present; underlying calls (tempfile.TemporaryDirectory, filesystem operations) may raise exceptions from the standard library if directory creation fails.
 
 ---
 
@@ -308,70 +289,80 @@ def skills_dir(tmp_dir: Path) -> Path
 
 ### Description
 
-Create a 'skills' subdirectory inside the provided temporary directory and populate it with three sample Markdown skill files, then return the path to that subdirectory.
+Create a 'skills' subdirectory inside the provided Path and populate it with three sample Markdown skill files, then return the directory Path.
 
 
-Given a Path object tmp_dir, the function creates a subdirectory named 'skills' (tmp_dir / 'skills'), then iterates over a fixed tuple of three skill base names ('code-review', 'security-audit', 'data-analysis'). For each name it writes a corresponding Markdown file named '<name>.md' into the skills directory containing YAML front matter (name, version, tags) and a simple Markdown body with a title derived from the name and the text 'Test skill.' Finally it returns the Path to the created 'skills' directory.
+Given a pathlib.Path representing a temporary directory, the function constructs a subdirectory named 'skills', creates that directory on the filesystem, and writes three Markdown files into it: 'code-review.md', 'security-audit.md', and 'data-analysis.md'. Each file contains a YAML front matter block with name, version, and tags, followed by a Markdown header derived from the filename and a short 'Test skill.' body. Finally, the function returns the Path to the created 'skills' directory.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `tmp_dir` | `Path` | ✅ | Path to an existing directory (typically a temporary directory) under which a 'skills' subdirectory will be created.
-<br>**Constraints:** Must be a pathlib.Path instance (or compatible object supporting / operator and write operations), Should exist and be a directory or at least allow creation of a subdirectory, Must be writable by the process (permissions required to create subdirectory and files) |
+| `tmp_dir` | `Path` | ✅ | A pathlib.Path pointing to a directory in which a 'skills' subdirectory will be created and populated.
+<br>**Constraints:** Must be a writable directory Path, Should exist prior to calling (function does not create parent tmp_dir), If a 'skills' directory already exists, sd.mkdir() will raise FileExistsError |
 
 ### Returns
 
 **Type:** `Path`
 
-A pathlib.Path pointing to the created 'skills' subdirectory containing the generated Markdown files.
+A pathlib.Path pointing to the newly created 'skills' subdirectory containing the three sample Markdown files.
 
 
 **Possible Values:**
 
-- A Path object representing tmp_dir / 'skills' when creation and writes succeed
-- Function may not return if an exception occurs during directory creation or file writes
+- Path object for the created 'skills' directory (e.g., tmp_dir / 'skills')
 
 ### Raises
 
 | Exception | Condition |
 | --- | --- |
-| `FileExistsError` | Raised by sd.mkdir() if a 'skills' entry already exists and is not a directory (or if mkdir is called without exist_ok and an entry exists). |
-| `OSError` | Raised on underlying filesystem errors during directory creation or file writes (including PermissionError, disk full, invalid path). |
+| `FileExistsError` | Raised by sd.mkdir() if a directory or file named 'skills' already exists at tmp_dir and mkdir is called without exist_ok=True. |
+| `OSError` | Raised for general filesystem-related errors (permission denied, disk full, invalid path) during directory creation or file writes (sd.mkdir() or Path.write_text()). |
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Creates a directory: tmp_dir / 'skills' (filesystem)
-- Writes three files to the filesystem: '<name>.md' for each of 'code-review', 'security-audit', 'data-analysis' inside the created directory
+- Creates a directory named 'skills' inside the provided tmp_dir (filesystem mkdir).
+- Writes three Markdown files to disk inside that directory: 'code-review.md', 'security-audit.md', 'data-analysis.md'.
 
 ### Usage Examples
 
-#### In a pytest fixture or test that needs a pre-populated skills directory
+#### Populate a pytest temporary directory fixture with sample skill files
 
 ```python
-sd = skills_dir(tmp_path)
-# sd is a Path to the created directory containing code-review.md, security-audit.md, data-analysis.md
+skills_directory = skills_dir(tmp_path)
+# tmp_path is a pytest.Path or pathlib.Path fixture; skills_directory is tmp_path / 'skills'
 ```
 
-Demonstrates calling the function with a temporary Path (e.g., pytest tmp_path) and using the returned Path to access generated sample skill files.
+Demonstrates calling the function with a temporary directory to create the 'skills' subdirectory and sample files for tests.
+
+#### Use in test setup to assert file contents
+
+```python
+sd = skills_dir(tmp_dir)
+assert (sd / 'code-review.md').exists()
+content = (sd / 'code-review.md').read_text()
+assert 'name: code-review' in content
+```
+
+Shows checking that the function created expected files with expected YAML front matter.
 
 ### Complexity
 
-Time complexity O(n) where n is the number of skill names written (here n=3, so effectively constant). Space complexity O(n) in terms of number of files created; each file consumes disk space proportional to its content size (constant-sized content in this implementation).
+Time: O(n) where n is the number of files written (here constant 3, so effectively O(1)). Each write_text call writes the file contents to disk. Space: O(n * s) on disk where s is average size of each file; in-memory usage is O(1) aside from the temporary strings created for writing.
 
 ### Related Functions
 
-- `tmp_path` - Common pytest fixture used as the temporary directory argument when calling this helper; provides the tmp_dir Path typically passed to this function
+- `tmp_path / tmpdir fixtures (pytest)` - Commonly used together; tmp_dir is expected to be a Path-like temporary directory provided by test harness (e.g., pytest's tmp_path).
 
 ### Notes
 
-- The list of skill names is hard-coded to ('code-review', 'security-audit', 'data-analysis').
-- sd.mkdir() is called without exist_ok=True, so if the 'skills' path already exists an exception may be raised.
-- Content of each file includes a YAML-like front matter block and a Markdown title generated by replacing hyphens with spaces and title-casing the name.
-- The function relies on Path.write_text and Path.mkdir behaviors from pathlib; any exceptions from those calls propagate to the caller.
+- Uses pathlib.Path operations: path division (/) to build file paths and write_text to write files.
+- sd.mkdir() is called without exist_ok=True, so the function will raise if the 'skills' directory already exists.
+- The file contents include a YAML front matter block and a Markdown header; names are derived directly from the filename strings and transformed for the header using replace and title.
+- No input validation is performed on tmp_dir beyond relying on Path methods; callers should ensure tmp_dir is a valid, writable directory Path.
 
 ---
 
@@ -389,67 +380,67 @@ def exports_dir(tmp_dir: Path) -> Path
 
 ### Description
 
-Create a subdirectory named 'exports' inside the provided tmp_dir and return its Path.
+Create a subdirectory named 'exports' inside the provided Path and return its Path object.
 
 
-Given a Path object tmp_dir, the function computes a child path by appending the string 'exports' (tmp_dir / "exports"), creates that directory using Path.mkdir() with default options, and returns the Path to the created directory. The function does not set exist_ok or parents on mkdir(), so it expects the parent tmp_dir to exist and that the 'exports' directory does not already exist unless the caller is prepared to handle the exception.
+Given a Path object tmp_dir, the function constructs a child path by combining tmp_dir with the string 'exports' (using the Path '/' operator), creates that directory on the filesystem using Path.mkdir(), and returns the Path object referencing the newly created directory. There is no special handling for existing directories; errors from Path.mkdir() propagate.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `tmp_dir` | `Path` | ✅ | The base directory under which an 'exports' subdirectory will be created.
-<br>**Constraints:** Must be a pathlib.Path (or objects supporting division operator to produce a Path-like result)., tmp_dir must exist on the filesystem and be writable, because mkdir() is called without parents=True., If tmp_dir does not exist or is not writable, mkdir() will raise an OSError (or subclass). |
+| `tmp_dir` | `Path` | ✅ | Base directory in which an 'exports' subdirectory will be created.
+<br>**Constraints:** Should be a pathlib.Path (or compatible object) representing a directory path, Parent filesystem location must allow directory creation (permissions, existence) |
 
 ### Returns
 
 **Type:** `Path`
 
-Path object pointing to the newly created 'exports' subdirectory (tmp_dir/'exports').
+A pathlib.Path object pointing to the created 'exports' subdirectory (tmp_dir / 'exports').
 
 
 **Possible Values:**
 
-- A pathlib.Path instance referencing the created directory at tmp_dir/'exports'.
+- A Path instance for the newly created directory when creation succeeds
+- No return if an exception is raised before returning
 
 ### Raises
 
 | Exception | Condition |
 | --- | --- |
-| `FileExistsError` | Raised by Path.mkdir() if the 'exports' path already exists and mkdir() is called with default exist_ok=False. |
-| `OSError` | Raised by Path.mkdir() for filesystem-related errors (e.g., permission denied, parent directory does not exist, invalid path). |
+| `FileExistsError` | If the path exists as a file (or if mkdir semantics cause this) and the underlying Path.mkdir() raises FileExistsError. |
+| `OSError` | For other filesystem-related errors from Path.mkdir(), e.g., permission denied, invalid path, disk errors. |
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Creates a directory on the filesystem at the path tmp_dir / 'exports' via Path.mkdir()
+- Creates a directory on the filesystem (calls Path.mkdir())
 
 ### Usage Examples
 
-#### Create an exports directory inside a temporary directory (e.g., in tests)
+#### Create an 'exports' directory inside a temporary directory
 
 ```python
-ed = exports_dir(tmp_path)
-# ed is tmp_path / 'exports', and the directory now exists on disk
+exports_path = exports_dir(tmp_dir)
 ```
 
-Demonstrates creating the 'exports' subdirectory under an existing temporary directory and obtaining its Path for further file operations.
+Creates tmp_dir/exports on disk and returns the Path object for that directory.
 
 ### Complexity
 
-O(1) time complexity and O(1) additional space complexity (constant-time path construction and a single filesystem mkdir call).
+Time complexity: O(1) (single path construction and a single filesystem mkdir call). Space complexity: O(1) additional memory (one Path object).
 
 ### Related Functions
 
-- `Path.mkdir` - Calls: exports_dir invokes Path.mkdir() to create the directory on disk.
+- `Path.mkdir` - Called by this function to create the directory on the filesystem
 
 ### Notes
 
-- Because mkdir() is called without exist_ok=True, calling exports_dir when tmp_dir/'exports' already exists will raise FileExistsError.
-- The function does not create missing parent directories (parents=False by default), so tmp_dir must exist prior to calling this function.
-- This function performs real filesystem I/O; in tests, use fixtures that provide an isolated temporary Path (e.g., pytest's tmp_path/tmpdir) to avoid side effects on real data.
+- The function does not pass exist_ok=True to mkdir(), so if the directory already exists or mkdir encounters a conflict, an exception from Path.mkdir() will be raised.
+- The function relies on pathlib.Path semantics for the '/' operator to build the child path.
+- No input validation is performed beyond relying on Path methods; callers should ensure tmp_dir is an appropriate Path.
 
 ---
 
@@ -467,46 +458,46 @@ def sample_skill() -> SkillDefinition
 
 ### Description
 
-Return a minimal SkillDefinition instance pre-populated with fixed test data.
+Returns a minimal SkillDefinition instance pre-filled with test data.
 
 
-The function constructs and returns a SkillDefinition object with hard-coded values intended for tests. It sets the name, description, version, tags, a single parameter schema entry, and a single example input/output pair. There is no computation or branching — the function always returns the same SkillDefinition instance contents each time it is called.
+This function constructs and returns a SkillDefinition object initialized with fixed test values: name 'test-skill', description 'A skill used in tests', version '1.0.0', tags ['test', 'fixture'], a single parameter entry for 'input' of type 'string' marked required, and one example mapping input 'hello' to output 'world'. The function contains no branching or computation beyond creating and returning this SkillDefinition instance.
 
 ### Returns
 
 **Type:** `SkillDefinition`
 
-A SkillDefinition instance created with static test values: name 'test-skill', description 'A skill used in tests', version '1.0.0', tags ['test','fixture'], parameters list with one parameter {'name': 'input', 'type': 'string', 'required': True}, and examples list with one example {'input': 'hello', 'output': 'world'}.
+A SkillDefinition object populated with a minimal set of fields used for testing purposes.
 
 
 **Possible Values:**
 
-- A SkillDefinition object configured with the specific test data described above
+- A SkillDefinition instance with the following literal contents: {name: 'test-skill', description: 'A skill used in tests', version: '1.0.0', tags: ['test','fixture'], parameters: [{'name':'input','type':'string','required': True}], examples: [{'input':'hello','output':'world'}]}
+- Any equivalent SkillDefinition object instance created by the constructor with the same field values
 
 ### Usage Examples
 
-#### Obtain a reusable minimal SkillDefinition for unit tests or fixtures
+#### Obtain a simple test SkillDefinition to use in unit tests or fixtures
 
 ```python
 skill = sample_skill()
-# use `skill` in assertions or pass to functions that accept SkillDefinition
 ```
 
-Demonstrates calling the function to get the predefined SkillDefinition instance for use in tests.
+Demonstrates calling the function to receive the predefined SkillDefinition instance for use in tests.
 
 ### Complexity
 
-O(1) time and O(1) space — the function performs a single object construction with a fixed small number of literal fields.
+O(1) time complexity and O(1) space complexity — the function performs a single object construction and returns it.
 
 ### Related Functions
 
-- `SkillDefinition` - Constructed by this function; the returned object is an instance of SkillDefinition.
+- `SkillDefinition` - Constructs and returns an instance of this class/type
 
 ### Notes
 
-- All returned values are constant literals defined in the function body.
-- No validation, mutation, I/O, or external calls are performed — the function purely constructs and returns an object.
-- The function relies on SkillDefinition being available in scope where this function is defined (imported or declared).
+- The function expects SkillDefinition to be defined or imported in the module scope where sample_skill is used; the function itself does not import or define SkillDefinition.
+- No validation is performed on the provided literal values; the behavior depends on the SkillDefinition constructor implementation.
+- This function is a deterministic factory that always returns the same data values.
 
 ---
 
@@ -524,16 +515,16 @@ def sample_tool() -> ToolDefinition
 
 ### Description
 
-Return a ToolDefinition instance pre-populated with fixed test values.
+Returns a pre-configured ToolDefinition instance used for testing.
 
 
-This function constructs and returns a ToolDefinition object with a fixed set of attributes intended for use in tests. The returned object has hard-coded values for name, description, category, authentication settings, health check URL, health status, version, and tags. There is no conditional logic, iteration, or external I/O; the function simply instantiates ToolDefinition with the listed literal values and returns it.
+This function constructs and returns a ToolDefinition object populated with fixed, hard-coded values intended as a minimal test fixture. The returned object includes name, description, category, authentication settings, a health check URL, an explicit health status, version, and tags. There is no conditional logic or external interaction in this function; it simply instantiates and returns the ToolDefinition with the specified literal values.
 
 ### Returns
 
 **Type:** `ToolDefinition`
 
-A ToolDefinition object initialized with specific test-oriented values.
+A ToolDefinition instance created with fixed test-oriented attributes.
 
 
 **Possible Values:**
@@ -542,28 +533,28 @@ A ToolDefinition object initialized with specific test-oriented values.
 
 ### Usage Examples
 
-#### Obtain a standard tool fixture for unit tests
+#### Obtain a test ToolDefinition fixture for unit tests or test setup
 
 ```python
 tool = sample_tool()
 ```
 
-Creates and returns a ToolDefinition instance pre-filled with the test values shown in the implementation; useful as a fixture in tests.
+Demonstrates creating the pre-configured ToolDefinition instance for use in tests.
 
 ### Complexity
 
-O(1) time complexity and O(1) space complexity (constant-time object instantiation and return).
+O(1) time and O(1) space — constant time and space to instantiate and return a single object.
 
 ### Related Functions
 
-- `ToolDefinition` - Constructor/class used to create the returned object
-- `ToolHealth.HEALTHY` - Enumerated value referenced to set the health field on the returned object
+- `ToolDefinition` - Constructor called to create and return the object
+- `ToolHealth` - Enum/constant referenced to set the health field on the created object
 
 ### Notes
 
-- Function has no parameters and always returns the same ToolDefinition instance shape with literal values.
-- No validation, I/O, or side effects are performed; if ToolDefinition's constructor raises, that would propagate but the function itself contains no raise statements.
-- This is suitable as a test fixture; changing the returned literals will change tests that depend on them.
+- The function uses literal, hard-coded values and does not accept parameters.
+- No validation, I/O, or side effects are performed; it is suitable as a simple test fixture.
+- If the ToolDefinition constructor signature changes, this function must be updated accordingly.
 
 ---
 
@@ -581,56 +572,47 @@ def sample_event() -> Event
 
 ### Description
 
-Return a minimal Event instance pre-filled with test values.
+Return a minimal Event instance configured for testing.
 
 
-This function constructs and returns an Event object populated with a fixed set of fields intended for testing: source set to the string "test", topic set to EventTopic.SYSTEM, action set to "test.action", and payload set to a dictionary {"key": "value"}. The function takes no inputs and always returns the same Event instance structure.
+Constructs and returns a new Event object with fixed fields intended for use in tests. The function calls the Event constructor with source set to the string "test", topic set to EventTopic.SYSTEM, action set to "test.action", and payload set to the dict {"key": "value"}. It does not take any inputs and always returns the same pattern of Event.
 
 ### Returns
 
 **Type:** `Event`
 
-An Event instance with the following fields: source="test", topic=EventTopic.SYSTEM, action="test.action", payload={"key": "value"}.
+An Event instance constructed with the following fixed values: source='test', topic=EventTopic.SYSTEM, action='test.action', payload={'key': 'value'}.
 
 
 **Possible Values:**
 
-- Event(source='test', topic=EventTopic.SYSTEM, action='test.action', payload={'key': 'value'})
+- An Event object with source='test', topic=EventTopic.SYSTEM, action='test.action', payload={'key': 'value'}
 
 ### Usage Examples
 
-#### Create a reusable minimal Event for tests
-
-```python
-evt = sample_event()
-```
-
-Demonstrates calling sample_event to obtain a preconfigured Event instance for assertions in tests.
-
-#### Accessing fields of the test Event
+#### Create a reusable test event to pass into code under test
 
 ```python
 evt = sample_event()
 assert evt.source == 'test'
-assert evt.action == 'test.action'
+# pass evt to functions that accept an Event
 ```
 
-Shows typical usage in a unit test to verify the returned Event's attributes.
+Demonstrates obtaining the standardized Event instance produced by this helper and checking one of its fields before using it in tests.
 
 ### Complexity
 
-O(1) time and O(1) additional space — constructs and returns a single Event object with fixed-size payload.
+O(1) time and O(1) space (constant-time construction of a single object).
 
 ### Related Functions
 
-- `Event` - The return type; sample_event constructs and returns an instance of Event.
-- `EventTopic` - Enumeration/constant used to set the topic field on the returned Event (uses EventTopic.SYSTEM).
+- `Event` - Calls the Event constructor to create and return the Event instance.
+- `EventTopic.SYSTEM` - References this enum/constant value to set the event topic.
 
 ### Notes
 
-- The function depends on Event and EventTopic names being available in scope (imported or defined in the module).
-- No validation is performed; values are hard-coded for testing purposes.
-- Because the payload is a dictionary literal, callers receive a separate object each call (mutable), so modifying evt.payload will not affect future calls.
+- This helper returns a fixed, minimal Event suitable for tests; it does not accept parameters to customize the returned Event.
+- If the Event constructor or EventTopic enum changes, this helper should be updated accordingly.
 
 ---
 
@@ -648,16 +630,16 @@ def sample_checkpoint() -> Checkpoint
 
 ### Description
 
-Returns a minimal Checkpoint instance pre-populated for testing.
+Returns a newly constructed Checkpoint instance with a fixed name and state for use in tests.
 
 
-This function constructs and returns a Checkpoint object literal with fixed fields suitable for use in tests. It creates a Checkpoint with name set to "test-checkpoint" and state set to a dictionary containing a numeric counter (42) and a list of items ["a", "b"]. The function performs no calculations or branching; it simply calls the Checkpoint constructor with these literal values and returns the resulting object.
+This function constructs and returns a Checkpoint object using a literal name "test-checkpoint" and a literal state dictionary {'counter': 42, 'items': ['a', 'b']}. The function contains no branching or computation beyond creating and returning the Checkpoint instance; it is a small factory/helper used in tests to provide a minimal, deterministic Checkpoint value.
 
 ### Returns
 
 **Type:** `Checkpoint`
 
-An instance of the Checkpoint class constructed with predefined test values.
+A Checkpoint instance created with name="test-checkpoint" and state={'counter': 42, 'items': ['a', 'b']}.
 
 
 **Possible Values:**
@@ -666,26 +648,22 @@ An instance of the Checkpoint class constructed with predefined test values.
 
 ### Usage Examples
 
-#### Create a reusable minimal checkpoint fixture in tests
+#### Providing a minimal checkpoint object for unit tests or fixtures
 
 ```python
 cp = sample_checkpoint()
 ```
 
-Demonstrates obtaining the predefined Checkpoint instance for assertions or as a fixture input.
+Creates a Checkpoint instance with a known name and state to be used in assertions or passed to functions under test.
 
 ### Complexity
 
-O(1) time and O(1) extra space — performs a single constructor call and returns the created object.
-
-### Related Functions
-
-- `Checkpoint` - Constructed by and returned (the function calls the Checkpoint constructor to create the returned object).
+O(1) time complexity and O(1) space complexity (constant-time construction of a small object).
 
 ### Notes
 
-- The function assumes the Checkpoint class/type is available in scope (imported or defined elsewhere).
-- No validation is performed on the values; they are fixed literals intended for tests.
+- The function references the Checkpoint type and returns an instance; the definition or import of Checkpoint is not shown in this snippet and must be available in the test module context.
+- This is a deterministic helper intended for tests; it always returns the same contents.
 
 ---
 
@@ -703,47 +681,48 @@ def sample_artifact(tmp_dir: Path) -> Artifact
 
 ### Description
 
-Returns a minimal Artifact instance constructed with fixed test values.
+Return a newly constructed Artifact instance with fixed test values.
 
 
-The function constructs and returns an Artifact object with hard-coded values for name, content, format, and tags. The provided parameter tmp_dir is accepted but not used in the implementation. No conditional logic or side effects occur; the function always returns the same Artifact shape (with the same field values) when called.
+This function creates and returns an Artifact object initialized with hard-coded test data: name 'test-artifact', markdown content '# Test Artifact\n\nHello, world.\n', format 'md', and tags ['test']. The supplied parameter tmp_dir is accepted but not used in the implementation.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `tmp_dir` | `Path` | ✅ | A Path parameter accepted by the fixture; not used in the function body.
-<br>**Constraints:** No constraints enforced by this function (value is not accessed or validated). |
+| `tmp_dir` | `Path` | ✅ | A Path object provided to the function (not used by this implementation).
+<br>**Constraints:** No validation or usage in the function body; any Path-like value may be passed but has no effect |
 
 ### Returns
 
 **Type:** `Artifact`
 
-An Artifact instance constructed with fixed test data: name='test-artifact', content='# Test Artifact\n\nHello, world.\n', format='md', tags=['test'].
+An Artifact instance constructed with fixed test properties (name, content, format, tags).
 
 
 **Possible Values:**
 
-- An Artifact object with the exact fields: name='test-artifact', content='# Test Artifact\n\nHello, world.\n', format='md', tags=['test']
+- An Artifact object with: name='test-artifact', content="# Test Artifact\n\nHello, world.\n", format='md', tags=['test']
 
 ### Usage Examples
 
-#### Obtain a simple test Artifact in unit tests
+#### Create a minimal Artifact for a unit test when a tmp_dir fixture is available
 
 ```python
 artifact = sample_artifact(tmp_dir)
 ```
 
-Demonstrates calling the fixture to get a minimal Artifact instance; tmp_dir is passed but not used.
+Demonstrates calling the helper to obtain a ready-to-use Artifact with consistent test data. The tmp_dir argument is accepted but ignored.
 
 ### Complexity
 
-O(1) time complexity and O(1) space complexity — the function performs a single object construction with constant-sized literals.
+O(1) time and O(1) additional space — creates a single Artifact instance with constant-size data.
 
 ### Notes
 
-- The tmp_dir parameter is unused in the implementation — it may exist to satisfy a pytest fixture signature or future use.
-- The function always returns the same content and metadata; it does not read or write files or depend on external state.
+- The tmp_dir parameter is unused in the function body; it likely exists to match test fixture signatures or future expansion.
+- The function returns a concrete Artifact constructed directly; no validation or mutation occurs.
+- If the Artifact constructor performs validation or side effects, those are not visible in this function's code and are not documented here.
 
 ---
 
@@ -761,45 +740,45 @@ def sample_session() -> Session
 
 ### Description
 
-Returns a newly constructed Session instance with its state set to SessionState.RUNNING.
+Returns a newly constructed Session object with its state set to SessionState.RUNNING.
 
 
-This function constructs and returns a Session object by calling the Session constructor with a single keyword argument: state=SessionState.RUNNING. It does not take any parameters, perform any computation, or modify external state; it simply returns the created Session instance.
+This function constructs and returns a minimal Session instance intended for tests. It calls the Session constructor with a single keyword argument: state set to SessionState.RUNNING. There is no additional logic, branching, or mutation beyond creating and returning that Session object.
 
 ### Returns
 
 **Type:** `Session`
 
-A Session instance created with its state set to SessionState.RUNNING.
+A Session instance created by calling Session(state=SessionState.RUNNING).
 
 
 **Possible Values:**
 
-- Session(state=SessionState.RUNNING)
+- A Session object whose 'state' attribute equals SessionState.RUNNING
 
 ### Usage Examples
 
-#### Create a minimal running session for tests
+#### Create a test session with running state for use in unit tests
 
 ```python
-sample_session()
+session = sample_session()
 ```
 
-Demonstrates calling the helper to obtain a Session object that is already in the RUNNING state for use in test fixtures or assertions.
+Demonstrates calling the helper to obtain a Session preconfigured with SessionState.RUNNING.
 
 ### Complexity
 
-O(1) time and O(1) space - constant-time construction and return of a Session object.
+O(1) time and O(1) space — constructs and returns a single object with a fixed number of arguments.
 
 ### Related Functions
 
-- `Session` - Constructor used by this function to create and return the session instance
-- `SessionState` - Enumeration/namespace used to set the session's state to RUNNING
+- `Session` - Called by sample_session — the constructor invoked to create the returned object.
+- `SessionState.RUNNING` - Used as the value passed into Session to set the session's state.
 
 ### Notes
 
-- The function body is a single return statement; it does not validate inputs (there are none) or handle exceptions.
-- The concrete behavior depends on the Session constructor and SessionState enum; this function only forwards a specific state value to Session.
+- This function assumes Session and SessionState are available in scope (imported or defined elsewhere in the test module).
+- No validation or error handling is performed here; any exceptions would come from the Session constructor or related imports.
 
 ---
 
@@ -817,43 +796,44 @@ def event_bus() -> EventBus
 
 ### Description
 
-A fresh EventBus instance.
+Return a newly constructed EventBus instance configured with buffer_size=1000.
 
-This function constructs and returns a new EventBus object by calling the EventBus constructor with buffer_size set to 1000. The function has no parameters and performs a single object instantiation before returning that instance.
+
+This function creates and returns a new EventBus by calling the EventBus constructor with a single keyword argument buffer_size set to 1000. The function does not accept any parameters and forwards the fixed configuration to the EventBus constructor before returning the created object.
 
 ### Returns
 
 **Type:** `EventBus`
 
-A newly constructed EventBus instance created by calling EventBus(buffer_size=1000).
+A newly instantiated EventBus object constructed with buffer_size=1000.
 
 
 **Possible Values:**
 
-- An EventBus instance configured with buffer_size=1000
+- An EventBus instance (constructed via EventBus(buffer_size=1000))
 
 ### Usage Examples
 
-#### Obtain a fresh EventBus instance for use in tests or local code
+#### Obtain a fresh EventBus for tests or local usage
 
 ```python
 bus = event_bus()
 ```
 
-Creates and returns a new EventBus object initialized with buffer_size=1000.
+Creates an EventBus instance with buffer_size set to 1000 and assigns it to the variable bus.
 
 ### Complexity
 
-O(1) time and O(1) additional space (constant-time object construction; actual constructor complexity depends on EventBus.__init__).
+O(1) time and O(1) space — the function performs a single constructor call and returns its result.
 
 ### Related Functions
 
-- `EventBus` - Calls the EventBus constructor (EventBus(buffer_size=1000)) to create the returned instance
+- `EventBus` - Calls/constructs — this function calls the EventBus constructor to produce the return value.
 
 ### Notes
 
-- The function's docstring is exactly 'A fresh EventBus instance.'
-- Any exceptions or side effects originating from EventBus.__init__ are not visible in this implementation and are therefore not documented here.
+- The function body is a direct, single-line factory wrapper around EventBus(buffer_size=1000).
+- No parameters or configuration options are exposed by this function; buffer_size is fixed to 1000 in the call visible in the implementation.
 
 ---
 
@@ -871,44 +851,43 @@ def skill_registry() -> SkillRegistry
 
 ### Description
 
-Returns a newly constructed SkillRegistry instance by calling its constructor.
+Return a newly constructed SkillRegistry instance.
 
-
-This function is a zero-argument factory/helper that creates and returns a fresh SkillRegistry object by invoking SkillRegistry(). The implementation consists solely of a return statement that constructs and returns the object; there is no additional logic, configuration, or mutation in this function.
+This zero-argument function constructs and returns a new SkillRegistry by calling its constructor and returning the resulting object. The implementation contains only a direct call to SkillRegistry() and returns that instance; there is no additional initialization, configuration, or logic in this wrapper.
 
 ### Returns
 
 **Type:** `SkillRegistry`
 
-A newly constructed instance of the SkillRegistry class created by calling SkillRegistry().
+A fresh instance of the SkillRegistry class created by calling its constructor.
 
 
 **Possible Values:**
 
-- An instance of SkillRegistry (the result of calling SkillRegistry()).
+- An instance of SkillRegistry
 
 ### Usage Examples
 
-#### Obtain a fresh SkillRegistry for tests or setup
+#### Obtain a fresh SkillRegistry for use in tests or fixtures
 
 ```python
 registry = skill_registry()
 ```
 
-Demonstrates creating a new SkillRegistry instance using this helper function; no arguments are required.
+Demonstrates calling the function to receive a new SkillRegistry instance.
 
 ### Complexity
 
-O(1) time complexity and O(1) space complexity (constructing a single object).
+O(1) time and O(1) additional space (aside from the memory allocated by SkillRegistry() for the returned instance).
 
 ### Related Functions
 
-- `SkillRegistry` - Constructs an instance of this class by calling its constructor.
+- `SkillRegistry` - Constructor called by this function; this function is a thin wrapper that returns a new SkillRegistry instance.
 
 ### Notes
 
-- The function relies on SkillRegistry being available in scope where this function is defined.
-- No validation, caching, or singleton behavior is implemented—each call returns a new instance.
+- The function takes no parameters and performs no validation.
+- Any behavior, side effects, or exceptions depend entirely on SkillRegistry.__init__ implementation, which is not shown here.
 
 ---
 
@@ -928,41 +907,41 @@ def tool_registry() -> ToolRegistry
 
 Returns a newly constructed ToolRegistry instance.
 
-The function calls the ToolRegistry constructor with no arguments and returns the resulting instance. It performs no additional computation, configuration, or mutation; it simply creates and returns a fresh ToolRegistry object.
+This function calls the ToolRegistry constructor with no arguments and returns the resulting object. The implementation is a single return statement that constructs and returns ToolRegistry(). There is no additional logic, configuration, or state mutation performed inside this function.
 
 ### Returns
 
 **Type:** `ToolRegistry`
 
-A newly created instance of the ToolRegistry class, constructed by calling ToolRegistry().
+A new instance of the ToolRegistry class constructed by calling ToolRegistry().
 
 
 **Possible Values:**
 
-- An instance of ToolRegistry constructed by ToolRegistry()
+- An instance of ToolRegistry (constructed object)
 
 ### Usage Examples
 
-#### Obtain a fresh registry for tests or initialization
+#### Obtain a fresh ToolRegistry instance for tests or fixtures
 
 ```python
-r = tool_registry()
+registry = tool_registry()
 ```
 
-Constructs and returns a new ToolRegistry instance for use by the caller.
+Demonstrates calling the function to receive a newly constructed ToolRegistry object.
 
 ### Complexity
 
-O(1) time complexity and O(1) space complexity (aside from the space used by the returned object).
+O(1) time complexity and O(1) space complexity (single object construction and return)
 
 ### Related Functions
 
-- `ToolRegistry` - Constructs and returns an instance of this class (calls its constructor).
+- `ToolRegistry` - Constructor called by this function to produce the return value
 
 ### Notes
 
-- The function does not accept parameters and does not perform any validation.
-- Any exceptions raised would originate from the ToolRegistry() constructor; this function does not explicitly raise exceptions.
+- The function body is a direct call to ToolRegistry() and returns that object; no parameters are accepted.
+- Any behavior, exceptions, or side effects beyond constructing ToolRegistry depend entirely on the ToolRegistry constructor implementation, which is not shown here.
 
 ---
 
@@ -980,44 +959,44 @@ def safety_layer() -> SafetyLayer
 
 ### Description
 
-Return a newly constructed SafetyLayer instance using its default constructor.
+Return a new SafetyLayer instance created with its default constructor.
 
 
-This function calls the SafetyLayer constructor with no arguments and returns the resulting object. There is no additional logic, parameter handling, or mutation; it simply wraps the SafetyLayer() call in a zero-argument helper function.
+The function calls the SafetyLayer constructor with no arguments and returns the newly created object. There is no additional logic, configuration, or handling; it simply forwards to SafetyLayer() and returns that instance. The docstring states it provides a SafetyLayer with default rules, but the function implementation only constructs and returns SafetyLayer() without modifying it.
 
 ### Returns
 
 **Type:** `SafetyLayer`
 
-A new SafetyLayer instance created by calling SafetyLayer() with no arguments.
+A newly constructed SafetyLayer object returned from calling SafetyLayer() with no arguments.
 
 
 **Possible Values:**
 
-- An instance of SafetyLayer constructed via SafetyLayer()
+- An instance of SafetyLayer constructed by SafetyLayer()
 
 ### Usage Examples
 
-#### Obtain a default SafetyLayer for tests or setup
+#### Obtain a default-configured SafetyLayer instance for use in tests or setup code
 
 ```python
-layer = safety_layer()
+safety = safety_layer()
 ```
 
-Creates and returns a new SafetyLayer instance using its default constructor.
+Calls the function which constructs and returns a SafetyLayer instance using its default constructor.
 
 ### Complexity
 
-O(1) time and O(1) space — the function performs a single constructor call and returns the result.
+Time: O(1) — the function performs a single constructor call and return. Space: O(1) additional — only the new SafetyLayer instance allocation (cost depends on SafetyLayer constructor).
 
 ### Related Functions
 
-- `SafetyLayer` - Constructor that is called by this function; the returned object is an instance of this class.
+- `SafetyLayer` - Constructor/class invoked by this function; safety_layer returns an instance of this class.
 
 ### Notes
 
-- The function assumes SafetyLayer is available in the current scope (imported or defined).
-- No validation or customization of the SafetyLayer instance is performed here; callers must configure the instance if needed.
+- The function contains no logic beyond calling SafetyLayer() and returning the result.
+- Any behavior, configuration, or side effects depend entirely on SafetyLayer.__init__ and are not visible in this function's implementation.
 
 ---
 
@@ -1035,70 +1014,75 @@ async def kernel() -> AsyncGenerator[Kernel, None]
 
 ### Description
 
-Creates and yields a booted Kernel instance for use by the caller, then shuts it down after use.
+Provides an async test fixture that yields a booted Kernel instance and ensures it is shut down after use.
 
 
-This asynchronous generator constructs a Kernel instance, awaits its boot() coroutine to initialize it, yields that Kernel instance to the caller, and after the caller resumes the generator it awaits the Kernel.shutdown() coroutine to perform teardown. It is written as an async generator that ensures boot is completed before yielding and shutdown is executed after the consumer is done with the yielded Kernel.
+This function is an asynchronous generator intended for use as a test fixture. It constructs a Kernel instance, awaits its boot() coroutine to perform any startup work, yields the Kernel to the caller, and after the caller resumes the fixture it awaits k.shutdown() to perform cleanup. The generator ensures that shutdown is awaited after the yielded Kernel is used by the test. The implementation shows direct calls to Kernel(), k.boot(), and k.shutdown() and yields the Kernel instance between boot and shutdown steps.
 
 ### Returns
 
 **Type:** `AsyncGenerator[Kernel, None]`
 
-An async generator that yields a single Kernel instance. The generator yields the booted Kernel, and once the consumer finishes iteration/control returns to the generator, it awaits shutdown and then completes.
+An async generator that yields a single Kernel instance (the Kernel object created and booted). The generator does not return a value after completion; instead it performs shutdown as cleanup.
 
 
 **Possible Values:**
 
-- Yields a Kernel instance (the booted Kernel)
-- Generator completes after shutdown, returning None
+- Yields a Kernel instance once, then completes after awaiting shutdown
+- If an exception occurs during boot or while the caller uses the yielded Kernel, the shutdown coroutine may not be reached (the exception will propagate)
+
+### Raises
+
+| Exception | Condition |
+| --- | --- |
+| `Any exception raised by Kernel.boot or Kernel.shutdown or Kernel constructor` | If Kernel() constructor, k.boot(), or k.shutdown() raise, those exceptions propagate out of this generator; there are no explicit try/except handlers in this function |
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Instantiates a Kernel object (calls Kernel())
-- Calls and awaits Kernel.boot(), which may mutate Kernel/internal state
-- Calls and awaits Kernel.shutdown(), which may perform teardown and mutate state
+- Constructs a Kernel instance (calls Kernel())
+- Performs asynchronous startup by awaiting k.boot()
+- Performs asynchronous cleanup by awaiting k.shutdown()
 
 ### Usage Examples
 
-#### Use as a test fixture to obtain a ready Kernel for the duration of a test
+#### As a pytest async fixture to provide a booted kernel to a test
 
 ```python
 async for k in kernel():
     # use k inside test
-    pass
+    ...
 ```
 
-Demonstrates obtaining the booted Kernel from the async generator; after the test finishes using k, control returns and kernel() will await k.shutdown().
+Demonstrates yielding the booted Kernel instance; after the test finishes using the yielded instance the fixture awaits k.shutdown() as cleanup.
 
-#### Use directly with 'async with' style via context manager helper (if adapted)
+#### Typical pytest-asyncio usage (conceptual)
 
 ```python
-# If adapted to an async context manager wrapper
-async with kernel() as k:
-    # use k
-    pass
+@pytest.mark.asyncio
+async def test_something(kernel):
+    # kernel would be provided by the fixture system; this example shows intended usage
+    assert kernel is not None
 ```
 
-Shows intended lifecycle: k is available inside the block after boot(), and shutdown() runs afterward. (Note: the function as written is an async generator, not an async context manager; this example assumes an adapter.)
+Shows how the fixture would be injected into an async test. (Actual fixture registration not shown in this snippet.)
 
 ### Complexity
 
-Time complexity: O(1) for the Python-level operations performed here (object construction and awaiting two coroutines). Space complexity: O(1) additional Python-level memory; the Kernel instance itself consumes memory dependent on Kernel implementation.
+Time: O(1) excluding the cost of Kernel.boot()/Kernel.shutdown(); Space: O(1) additional stack/memory aside from the Kernel instance
 
 ### Related Functions
 
-- `Kernel.__init__` - Called to construct the Kernel instance
-- `Kernel.boot` - Called and awaited to initialize the Kernel before yielding
-- `Kernel.shutdown` - Called and awaited after yielding to teardown the Kernel
+- `Kernel.boot` - Called by this function to start the Kernel
+- `Kernel.shutdown` - Called by this function to shut down the Kernel after the yield
 
 ### Notes
 
-- This function is an async generator that yields exactly once (the booted Kernel) and performs teardown after the consumer resumes the generator.
-- No explicit exception handling is present; exceptions raised by Kernel(), Kernel.boot(), or Kernel.shutdown() will propagate to the caller.
-- Defined in tests/conftest.py, indicating intended use as a test fixture.
+- This implementation yields the Kernel once and relies on the caller/test harness to resume the generator to trigger the asynchronous shutdown.
+- No exception handling is present in the fixture; any exceptions raised by Kernel methods will propagate to the caller.
+- This is an async generator function (used as a fixture pattern in async test frameworks); it must be iterated/used in an async context to execute boot and shutdown.
 
 ---
 
@@ -1116,40 +1100,44 @@ def game_state() -> GameState
 
 ### Description
 
-Returns a newly constructed GameState instance configured with max_undo=50.
+Returns a newly constructed GameState instance configured with max_undo set to 50.
 
 
-This function creates and returns a new GameState object by calling the GameState constructor with a single keyword argument max_undo set to 50. The function has no parameters and performs no additional logic, validation, or side effects beyond instantiating and returning the object.
+This function creates and returns a fresh GameState object by calling the GameState constructor with the keyword argument max_undo=50. The implementation consists of a single return statement and does not perform any additional logic, validation, or side effects.
 
 ### Returns
 
 **Type:** `GameState`
 
-A newly created GameState instance constructed with max_undo=50.
+A new GameState instance created by calling GameState(max_undo=50).
 
 
 **Possible Values:**
 
-- An instance of GameState configured with max_undo equal to 50
+- An instance of GameState configured with its max_undo attribute (or constructor parameter) set to 50
 
 ### Usage Examples
 
-#### Obtain a fresh GameState object for use in tests or initialization code
+#### Obtain a test fixture GameState for use in tests
 
 ```python
 state = game_state()
 ```
 
-Demonstrates calling the function to receive a new GameState instance configured with max_undo=50.
+Demonstrates calling the function to get a fresh GameState instance with max_undo=50 for use in test setup.
 
 ### Complexity
 
-Time complexity: O(1). Space complexity: O(1) (creates a single object reference).
+O(1) time and O(1) additional space: constructs a single object and returns it.
+
+### Related Functions
+
+- `GameState` - Constructs/instantiates the GameState class (this function calls the GameState constructor).
 
 ### Notes
 
-- The function simply wraps the GameState constructor with max_undo=50; no other behavior is implemented here.
-- Implementation is minimal and visible in the provided source: return GameState(max_undo=50).
+- The function body is a single return of GameState(max_undo=50); no other behavior is present in the code shown.
+- Any behavior or attributes of the returned object depend entirely on GameState's implementation, which is not shown here.
 
 ---
 
@@ -1167,43 +1155,44 @@ def game_runner() -> GameRunner
 
 ### Description
 
-Return a newly constructed GameRunner instance.
+Returns a new GameRunner instance created with no games registered.
 
-This function has no parameters and returns the result of calling the GameRunner constructor. The implementation consists of a single return statement that constructs and returns a GameRunner object. There is no additional logic, branching, or parameter handling in this function; it simply instantiates and returns GameRunner.
+
+This function constructs and returns a fresh GameRunner by calling its zero-argument constructor. The implementation contains a single return statement that invokes GameRunner() and returns that object. There is no additional initialization, mutation, or registration performed within this function.
 
 ### Returns
 
 **Type:** `GameRunner`
 
-A newly created GameRunner object produced by calling GameRunner().
+A newly constructed GameRunner object created by calling GameRunner() with no arguments.
 
 
 **Possible Values:**
 
-- An instance of GameRunner (the object returned by GameRunner())
+- An instance of GameRunner created via GameRunner() (with whatever default internal state GameRunner's constructor provides).
 
 ### Usage Examples
 
-#### Obtain a fresh GameRunner instance for tests or initialization
+#### Obtain a fresh GameRunner instance for use in tests or other code
 
 ```python
 runner = game_runner()
 ```
 
-Calls the function which returns a newly constructed GameRunner instance.
+Demonstrates calling the function to receive a new GameRunner object constructed with the default constructor.
 
 ### Complexity
 
-O(1) time complexity and O(1) space complexity (ignoring the complexity of GameRunner.__init__ which is not visible here).
+O(1) time and O(1) additional space (constructing a single object; actual constructor complexity depends on GameRunner.__init__).
 
 ### Related Functions
 
-- `GameRunner` - Called by / constructed within this function (game_runner returns GameRunner()).
+- `GameRunner.__init__` - Called by this function; the returned object's initial state is determined by GameRunner's constructor.
 
 ### Notes
 
-- The function body is a single constructor call and return. Any side effects or exceptions that may occur depend solely on GameRunner's constructor implementation, which is not visible here.
-- Although located in tests/conftest.py (commonly used for pytest fixtures), there is no decorator or fixture marker visible in this implementation; it is a plain function as shown.
+- The function performs no operations beyond calling GameRunner(). Any behavior beyond object construction (such as registering games) is determined entirely by GameRunner's constructor and not by this function.
+- Implementation is a single-line wrapper; there are no parameters and no error handling in this function itself.
 
 ---
 
@@ -1221,45 +1210,46 @@ def mock_event_callback() -> AsyncMock
 
 ### Description
 
-Returns a newly constructed AsyncMock instance by calling AsyncMock().
+Return a new AsyncMock instance by invoking AsyncMock() (an AsyncMock suitable for event bus subscription).
 
 
-This function has no parameters and, when invoked, constructs and returns a new AsyncMock object by calling AsyncMock() and returning it. There is no additional logic, branching, or mutation; the function simply acts as a small factory/wrapper around the AsyncMock constructor.
+This function contains a single statement that constructs and returns a new AsyncMock object by calling AsyncMock() with no arguments. There is no additional logic, branching, or side effects. The docstring indicates the returned AsyncMock is intended to be used for event bus subscription, but the implementation only creates and returns the AsyncMock instance.
 
 ### Returns
 
 **Type:** `AsyncMock`
 
-A freshly created AsyncMock instance (the value produced by calling AsyncMock()).
+A newly created AsyncMock instance (constructed by calling AsyncMock()).
 
 
 **Possible Values:**
 
-- An instance of AsyncMock (constructed by AsyncMock()).
+- An AsyncMock instance
 
 ### Usage Examples
 
-#### Provide a mock asynchronous callback for subscribing to an event bus in tests
+#### Create a mock async callback to subscribe to an event bus or pass into async code during tests
 
 ```python
-cb = mock_event_callback()
-# cb is an AsyncMock and can be awaited or inspected for calls in test assertions
+mock_cb = mock_event_callback()
+# use mock_cb as an awaitable/mock callback in tests
 ```
 
-Demonstrates creating the AsyncMock via the helper and using it as an async-compatible callback in tests.
+Demonstrates calling the function to obtain an AsyncMock instance to be used where an async callback is expected.
 
 ### Complexity
 
-O(1) time and O(1) space — constructs and returns a single object.
+Time complexity: O(1) — constant time to construct and return an object. Space complexity: O(1) additional space aside from the created AsyncMock instance.
 
 ### Related Functions
 
-- `AsyncMock` - This function calls the AsyncMock constructor and returns its result; AsyncMock is the underlying object produced.
+- `AsyncMock` - Constructed by this function; the function returns an instance of AsyncMock.
 
 ### Notes
 
-- The implementation directly calls AsyncMock() and returns it; the symbol AsyncMock must be imported or available in the module where this function is defined.
-- The function itself is synchronous (normal def) even though it returns an async-capable mock object.
+- The function body is a single constructor call returning AsyncMock().
+- The implementation assumes AsyncMock is available in the scope where this function is defined; the function itself does not perform imports.
+- The docstring indicates intended use (event bus subscription) but that behavior is not enforced by the function implementation.
 
 ---
 
@@ -1277,40 +1267,61 @@ def mock_llm_response() -> dict
 
 ### Description
 
-Returns a hard-coded dictionary representing a mock LLM response payload for tests.
+Returns a static, hard-coded dictionary representing a mock LLM response payload for tests.
 
 
-This function constructs and returns a static Python dict that mimics the structure of a language model response. The returned dict contains top-level keys 'id', 'model', 'choices', and 'usage'. 'choices' is a list with a single choice dict that includes 'index', 'message' (with 'role' and 'content'), and 'finish_reason'. 'usage' is a dict with token counts. The function performs no computation beyond creating and returning this literal structure.
+This function constructs and returns a literal Python dictionary that mimics the structure of a language-model response. The returned dictionary contains top-level keys 'id', 'model', 'choices', and 'usage'. 'choices' is a list with a single choice entry that includes 'index', 'message' (with 'role' and 'content'), and 'finish_reason'. 'usage' contains integer token counts. There is no computation, branching, I/O, or external calls — the function simply returns the predefined dictionary.
 
 ### Returns
 
 **Type:** `dict`
 
-A dictionary containing a mock LLM response payload with keys: 'id' (str), 'model' (str), 'choices' (list of choice dicts), and 'usage' (dict of token counts).
+A dictionary representing a mock LLM response payload used in tests. Structure exactly as returned by the function.
 
 
 **Possible Values:**
 
-- {"id": "mock-response-001", "model": "test-model", "choices": [{"index": 0, "message": {"role": "assistant", "content": "This is a mock response for testing."}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}}
+- {
+  "id": "mock-response-001",
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "This is a mock response for testing."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 20,
+    "total_tokens": 30
+  }
+}
 
 ### Usage Examples
 
-#### Use in unit tests to simulate an LLM response without making network calls
+#### Use in unit tests to provide a deterministic LLM-like response payload
 
 ```python
 response = mock_llm_response()
+# assert response['id'] == 'mock-response-001'
+# assert response['choices'][0]['message']['content'] == 'This is a mock response for testing.'
 ```
 
-Demonstrates calling the function to obtain the static mock payload for assertions in tests.
+Demonstrates calling the function and inspecting fields in the returned mock payload for assertions in tests.
 
 ### Complexity
 
-O(1) time complexity and O(1) space complexity (returns a fixed-size literal structure).
+O(1) time and O(1) additional space (returns a fixed-size literal); complexity does not depend on input size since there are no inputs.
 
 ### Notes
 
-- The function returns a static literal and does not depend on external state or inputs.
-- Intended for tests (file is tests/conftest.py) to provide a predictable LLM-like payload.
+- The function is deterministic and returns the same literal dictionary on every call.
+- There are no side effects, so it is safe to call repeatedly in tests.
+- If tests require variations, callers must copy and modify the returned dict; the function itself does not accept parameters to customize output.
 
 ---
 
@@ -1328,71 +1339,71 @@ def make_skills(skill_registry: SkillRegistry) -> Callable[[int], list[SkillDefi
 
 ### Description
 
-Return a factory function that creates, registers, and returns a batch of SkillDefinition instances.
+Factory fixture that returns a helper function which registers a number of generated SkillDefinition objects in the given SkillRegistry and returns them as a list.
 
 
-make_skills takes a SkillRegistry object and returns an inner factory function _make. When called, _make creates a specified number (default 5) of SkillDefinition instances with generated name, description, version, tags, parameters, and examples. Each created SkillDefinition is registered with the provided skill_registry via skill_registry.register(s) and appended to a list which is returned to the caller.
+make_skills accepts a SkillRegistry and defines an inner factory function _make(count: int = 5) that: creates 'count' SkillDefinition instances with deterministic names, descriptions, version, tags, empty parameters and examples; registers each created SkillDefinition with the provided skill_registry by calling skill_registry.register(s); collects the created SkillDefinition objects in a list and returns that list. The outer function returns the inner _make factory so callers can generate and register batches of skills on demand (typical use as a pytest fixture factory).
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `skill_registry` | `SkillRegistry` | ✅ | Registry object used to register each generated SkillDefinition. The function calls skill_registry.register(s) for each generated skill.
-<br>**Constraints:** Must provide a register(skill: SkillDefinition) method that accepts SkillDefinition instances, Registry behavior and side effects depend on implementation of SkillRegistry.register |
+| `skill_registry` | `SkillRegistry` | ✅ | Registry object used to register each generated SkillDefinition via its register method.
+<br>**Constraints:** Must provide a .register(skill: SkillDefinition) method, No runtime type checks are performed in this function |
 
 ### Returns
 
 **Type:** `Callable[[int], list[SkillDefinition]]`
 
-A factory function _make(count: int = 5) that creates count SkillDefinition objects, registers each with the provided skill_registry, and returns the list of created SkillDefinition instances.
+A factory function _make that accepts an optional integer count (default 5) and returns a list of SkillDefinition objects after registering each with the provided skill_registry.
 
 
 **Possible Values:**
 
-- A callable that when invoked returns a list of SkillDefinition objects
-- The returned list length equals the count argument passed to the callable (default 5)
+- List of SkillDefinition instances of length equal to the provided count (count >= 0)
+- Empty list if count is 0
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Calls skill_registry.register(s) for each created SkillDefinition, which mutates or updates the external skill_registry state
+- Calls skill_registry.register(s) for each generated SkillDefinition, mutating the provided registry's state
 
 ### Usage Examples
 
-#### Create and register 3 generated skills in a test registry
+#### Use as a pytest fixture factory to create and register 3 generated skills
 
 ```python
-factory = make_skills(test_registry)
+factory = make_skills(my_skill_registry)
 skills = factory(3)
 ```
 
-Demonstrates obtaining the factory from make_skills and using it to create and register three SkillDefinition instances; skills is a list of the created objects.
+Demonstrates obtaining the returned factory from make_skills and using it to create and register three SkillDefinition instances; 'skills' will contain the three created instances.
 
-#### Use default count to create 5 skills
+#### Default usage (creates 5 skills)
 
 ```python
-factory = make_skills(test_registry)
-default_skills = factory()
+factory = make_skills(my_skill_registry)
+skills = factory()
 ```
 
-Shows calling the returned factory with no arguments to create and register the default of 5 skills.
+Calls the returned factory without arguments to create and register 5 generated skills (default count).
 
 ### Complexity
 
-Time: O(n) where n is the count passed to the returned factory (creates and registers n skills). Space: O(n) additional space for the returned list of SkillDefinition objects.
+Time: O(n) where n is the count argument (each iteration constructs a SkillDefinition and performs one register call). Space: O(n) additional memory for the returned list of SkillDefinition objects.
 
 ### Related Functions
 
-- `SkillRegistry.register` - Called by the factory; used to register each created SkillDefinition
-- `SkillDefinition.__init__` - Called when creating each SkillDefinition instance
+- `SkillRegistry.register` - Called by this function to register each generated SkillDefinition.
+- `SkillDefinition` - Constructor is invoked to create each generated skill instance.
 
 ### Notes
 
-- The generated SkillDefinition fields are deterministic in this implementation: name 'skill-{i}', description 'Generated skill {i}', version '1.0.0', tags ['generated', f'batch-{i % 3}'], and empty parameters/examples lists.
-- No validation or error handling is implemented in make_skills; exceptions from SkillDefinition construction or skill_registry.register will propagate to the caller.
-- The factory does not persist beyond calling skill_registry.register; persistence depends on the registry implementation.
+- The code does not validate the count argument (e.g., negative values). Passing a negative count will result in zero iterations because range(count) with negative count yields no iterations.
+- Tags are generated deterministically as ['generated', f'batch-{i % 3}'] and parameters/examples are empty lists.
+- No exceptions are explicitly raised by this function; any exception would come from the SkillDefinition constructor or skill_registry.register implementation.
 
 ---
 
@@ -1410,77 +1421,69 @@ def _make(count: int = 5) -> list[SkillDefinition]
 
 ### Description
 
-Creates a list of SkillDefinition instances (default 5), registers each with skill_registry, and returns the list of created SkillDefinition objects.
+Constructs a list of SkillDefinition instances (default 5), registers each with skill_registry, and returns the list.
 
 
-The function initializes an empty list named skills, then iterates count times (0..count-1). For each iteration index i it constructs a SkillDefinition instance with fields: name set to f"skill-{i}", description set to f"Generated skill {i}", version "1.0.0", tags containing "generated" and a batch tag based on i % 3, and empty parameters and examples lists. Each created SkillDefinition is registered by calling skill_registry.register(s) and appended to the local skills list. After the loop completes the function returns the list of created SkillDefinition objects.
+This helper function iterates count times, creating a new SkillDefinition on each iteration with deterministic values derived from the loop index (name, description, version, tags, parameters, examples). After creating each SkillDefinition, it calls skill_registry.register(s) to register the skill, appends the instance to a local list, and finally returns the list of created SkillDefinition objects. The function uses formatted strings to set name and description and cycles a tag value using i % 3.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `count` = `5` | `int` | ❌ | Number of SkillDefinition instances to create and register.
-<br>**Constraints:** Expected to be an integer (used with range()). If count is 0 or negative, the function will return an empty list., No explicit validation is performed in the function. |
+<br>**Constraints:** Expected to be a non-negative integer (function does not explicitly validate), If count is 0, the function returns an empty list |
 
 ### Returns
 
 **Type:** `list[SkillDefinition]`
 
-A list containing the SkillDefinition instances that were created and registered; list length equals count (or 0 if count <= 0).
+A list containing the SkillDefinition instances that were created and registered.
 
 
 **Possible Values:**
 
-- A list of SkillDefinition objects of length count when count > 0
-- An empty list when count is 0 or negative
+- A list with length equal to count containing SkillDefinition objects
+- An empty list if count is 0
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Calls skill_registry.register(s) for each created SkillDefinition, modifying the external skill_registry state (registration side effect).
+- Calls skill_registry.register(s) for each created SkillDefinition, which mutates external/global registry state
+- Appends created SkillDefinition objects to a local list returned to the caller (local mutation)
 
 ### Usage Examples
 
-#### Create and register the default number of skills (5)
+#### Create and register the default number of generated skills in tests
 
 ```python
 _make()
 ```
 
-Creates 5 SkillDefinition objects, registers each with skill_registry, and returns the list of those objects.
+Generates 5 SkillDefinition instances, registers each with skill_registry, and returns the list.
 
-#### Create and register a custom number of skills
-
-```python
-_make(3)
-```
-
-Creates 3 SkillDefinition objects (skill-0, skill-1, skill-2), registers them, and returns the list.
-
-#### Request zero skills
+#### Create and register a specific number of generated skills
 
 ```python
-_make(0)
+_make(10)
 ```
 
-Returns an empty list and does not call skill_registry.register because the loop does not execute.
+Generates 10 SkillDefinition instances, registers each with skill_registry, and returns the list of 10 objects.
 
 ### Complexity
 
-Time complexity: O(n) where n = count (constructs and registers count items). Space complexity: O(n) for the returned list of SkillDefinition instances.
+Time complexity O(count) — performs a constant amount of work per created item. Space complexity O(count) for the returned list (plus whatever skill_registry.register stores internally).
 
 ### Related Functions
 
-- `skill_registry.register` - Called by _make to register each newly created SkillDefinition instance.
-- `SkillDefinition` - Constructor invoked to create each skill object appended to the returned list.
+- `skill_registry.register` - Called by _make to register each created SkillDefinition; external dependency that produces the side effect of registering the skill.
 
 ### Notes
 
-- The function relies on the presence of skill_registry and SkillDefinition in the module/global scope; these are not defined within the function.
-- No input validation is done on count; non-integer or non-numeric values passed to count will cause built-in errors when used with range().
-- Tags include a generated batch tag based on i % 3 producing repeating batch-0, batch-1, batch-2 patterns.
+- The function does not perform input validation on count; negative values will cause range(count) to behave accordingly (no iterations for non-positive integers).
+- Potential exceptions may propagate from SkillDefinition(...) construction or skill_registry.register(...) calls, but the function itself does not catch or raise explicit exceptions.
+- The SkillDefinition type and skill_registry are assumed to be available in the module scope; this function relies on those definitions/objects being present.
 
 ---
 
@@ -1498,73 +1501,72 @@ def make_tools(tool_registry: ToolRegistry) -> Callable[[int], list[ToolDefiniti
 
 ### Description
 
-Factory fixture that returns a callable which registers a number of generated ToolDefinition instances in the provided ToolRegistry and returns them as a list.
+Factory fixture that creates and registers a specified number of ToolDefinition instances in the provided tool_registry and returns them as a list.
 
 
-make_tools accepts a ToolRegistry instance and returns an inner factory function _make. When _make(count: int = 5) is called it: 1) constructs `count` ToolDefinition objects with deterministic fields (name, description, category, auth_required, auth_scopes, health_check_url, health, version, tags) where the index i is used to generate unique values; 2) registers each created ToolDefinition with the provided tool_registry by calling tool_registry.register(t); and 3) collects and returns the created ToolDefinition objects in a list. The default number of tools created is 5 if no count is passed.
+make_tools is a higher-order function (a factory fixture commonly used in tests) that accepts a tool_registry object and returns an inner function _make. When called, _make(n) constructs n ToolDefinition instances with incremented names and predictable fields (name, description, category, auth flags, health_check_url, health, version, tags). Each created ToolDefinition is registered by calling tool_registry.register(t) and appended to a list which is returned. The default number of tools created by _make is 5.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `tool_registry` | `ToolRegistry` | ✅ | The registry object into which each generated ToolDefinition will be registered via its register(...) method.
-<br>**Constraints:** Must provide an object with a .register(...) method that accepts a ToolDefinition, No internal validation is performed on tool_registry by this function |
+| `tool_registry` | `ToolRegistry` | ✅ | Registry object into which each generated ToolDefinition will be registered via its register method.
+<br>**Constraints:** Must provide a register(tool: ToolDefinition) method (the function calls tool_registry.register(t)). |
 
 ### Returns
 
 **Type:** `Callable[[int], list[ToolDefinition]]`
 
-A factory function _make that when called with an integer count creates `count` ToolDefinition instances, registers each with the supplied tool_registry, and returns a list of the created ToolDefinition objects.
+Returns a callable _make that, when invoked with an integer count, creates that many ToolDefinition instances, registers each with the provided tool_registry, and returns a list of the created ToolDefinition objects.
 
 
 **Possible Values:**
 
-- A callable. When invoked with count n (default 5) returns a list of n ToolDefinition objects.
-- Returned list length equals the provided count (integer >= 0).
+- A function _make(count: int = 5) -> list[ToolDefinition]
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Calls tool_registry.register(t) for each generated ToolDefinition, mutating the external tool_registry state by registering new tools
+- Calls tool_registry.register(t) for each generated ToolDefinition, mutating the provided tool_registry (registers tools into the registry).
+- Instantiates ToolDefinition objects (allocates objects in memory).
 
 ### Usage Examples
 
-#### Create and register 5 generated tools (default)
+#### In a test setup to create and register 3 tools
 
 ```python
-factory = make_tools(my_tool_registry)
-created_tools = factory()
-# created_tools is a list of 5 ToolDefinition objects; my_tool_registry now contains those tools
+creator = make_tools(my_tool_registry)
+tools = creator(3)
 ```
 
-Demonstrates obtaining the factory from make_tools and using it with the default count to create and register tools.
+Demonstrates obtaining the _make callable from make_tools and creating/registering 3 ToolDefinition instances in my_tool_registry; tools is the list of created ToolDefinition objects.
 
-#### Create and register a custom number of tools
+#### Using default count
 
 ```python
-factory = make_tools(my_tool_registry)
-created_tools = factory(3)
-# created_tools is a list of 3 ToolDefinition objects; my_tool_registry has been updated with those 3 entries
+creator = make_tools(my_tool_registry)
+default_tools = creator()
 ```
 
-Shows calling the returned function with an explicit count to create a specific number of tools.
+Calls _make with the default parameter (5) to create and register five tools.
 
 ### Complexity
 
-Time: O(n) where n is the provided count (each iteration constructs an object and calls register). Space: O(n) additional space for the returned list of ToolDefinition objects.
+Time complexity: O(n) where n is the count argument passed to the returned _make function (loop that constructs and registers n ToolDefinition objects). Space complexity: O(n) for the list of returned ToolDefinition instances.
 
 ### Related Functions
 
-- `ToolRegistry.register` - make_tools calls this method to register each created ToolDefinition; behavior depends on ToolRegistry.register implementation
-- `ToolDefinition.__init__` - make_tools constructs ToolDefinition instances using its constructor
+- `ToolRegistry.register` - Called by make_tools/_make to register each created ToolDefinition.
+- `ToolDefinition` - Constructor is invoked to create each tool instance.
 
 ### Notes
 
-- The inner factory _make uses deterministic field values based on the loop index i (e.g., name 'tool-{i}', health_check_url 'https://example.com/tool-{i}/health').
-- No explicit error handling is provided; any exceptions raised by ToolDefinition construction or tool_registry.register will propagate to the caller.
-- Although the outer function make_tools itself does not perform registrations, the returned function _make performs registrations as a side effect.
+- make_tools returns an inner function _make; the outer function itself does not create tools until the returned callable is invoked.
+- Default number of created tools is 5 when _make is called with no arguments.
+- No explicit error handling is present; any exception raised by ToolDefinition construction or tool_registry.register will propagate to the caller.
+- This pattern is typical for pytest fixtures defined in tests/conftest.py — make_tools likely used to provide test data by registering tools in a shared registry.
 
 ---
 
@@ -1582,68 +1584,71 @@ def _make(count: int = 5) -> list[ToolDefinition]
 
 ### Description
 
-Create a list of ToolDefinition instances (default 5), register each one in the global tool_registry, and return the list.
+Create a list of ToolDefinition instances and register each one in the shared tool_registry, then return the list.
 
 
-The function allocates an empty list named tools, then iterates count times (0..count-1). On each iteration it constructs a ToolDefinition with deterministic fields: name 'tool-i', description 'Generated tool i', category 'generated', auth_required False, empty auth_scopes, a health_check_url using the index, health set to ToolHealth.HEALTHY, version '1.0.0', and tags ['generated']. It registers each created ToolDefinition by calling tool_registry.register(t), appends the instance to the local tools list, and after the loop returns the list of created ToolDefinition objects.
+This function iterates count times (default 5). On each iteration it constructs a ToolDefinition with predictable, generated values (name, description, category, auth settings, health_check_url, health, version, tags). After creating each ToolDefinition instance it registers the instance by calling tool_registry.register(t) and appends the instance to a local list. Once the loop completes it returns the list of created ToolDefinition objects.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `count` = `5` | `int` | ❌ | Number of ToolDefinition instances to create and register.
- |
+<br>**Constraints:** Should be a non-negative integer (function does not validate; negative values will result in range(count) behavior which produces no iterations). |
 
 ### Returns
 
 **Type:** `list[ToolDefinition]`
 
-A list containing the ToolDefinition instances that were created and registered (length equals count).
+A list containing the ToolDefinition instances that were created and registered (length equals count unless count is such that the loop yields fewer iterations).
 
 
 **Possible Values:**
 
-- A list with count ToolDefinition objects when count >= 0
-- An empty list when count == 0
+- A list with count ToolDefinition objects when count > 0
+- An empty list when count is 0 or when count causes no iterations (e.g., negative values)
 
 ### Side Effects
 
 > ❗ **IMPORTANT**
 > This function has side effects that modify state or perform I/O operations.
 
-- Calls tool_registry.register(t) for each created ToolDefinition, which mutates external/global registry state
+- Calls tool_registry.register(t) for each created ToolDefinition, mutating the global/shared tool_registry state by registering new tools
+- Creates ToolDefinition instances (allocates objects) but that is standard in-memory allocation
 
 ### Usage Examples
 
-#### Create and register three generated tools for use in tests
+#### Create and register 3 generated tools for use in tests
 
 ```python
 _make(3)
 ```
 
-Constructs three ToolDefinition instances, registers each with tool_registry, and returns the list of the three instances.
+Constructs three ToolDefinition objects, registers each with tool_registry, and returns the list of the three created ToolDefinition instances.
 
-#### Use default count to create five generated tools
+#### Use default to create and register 5 tools
 
 ```python
 _make()
 ```
 
-Constructs and registers five ToolDefinition instances and returns them.
+Creates five generated ToolDefinition objects, registers them in tool_registry, and returns the list.
 
 ### Complexity
 
-Time complexity O(n) where n == count due to one construction and one registration per item; space complexity O(n) for the returned list of ToolDefinition instances.
+Time complexity O(n) where n = count (the function performs a constant amount of work per iteration). Space complexity O(n) for the returned list of ToolDefinition objects.
 
 ### Related Functions
 
-- `tool_registry.register` - Called by _make to register each created ToolDefinition; external dependency
+- `tool_registry.register` - Called by this function to register each created ToolDefinition; responsible for recording/registering the tool in the shared registry.
+- `ToolDefinition.__init__` - Constructor invoked to create each tool instance with the provided generated fields.
 
 ### Notes
 
-- The function relies on the global tool_registry object and on ToolDefinition and ToolHealth types being available in scope.
-- No validation is performed on the count parameter inside the function; negative values will result in no iterations because range(count) with negative count yields an empty sequence.
-- Exceptions may propagate from ToolDefinition constructor or tool_registry.register, but the function itself contains no explicit raise statements.
+- The function does not validate the count parameter; passing a negative integer results in zero iterations and an empty list being returned.
+- Any exceptions thrown by ToolDefinition construction or tool_registry.register will propagate out of this function because they are not caught here.
+- The generated values (names, URLs, etc.) follow a predictable pattern: name 'tool-{i}', description 'Generated tool {i}', and health_check_url 'https://example.com/tool-{i}/health'.
+- Because it mutates tool_registry, this helper is suitable for test setup but will affect global/shared test state.
 
 ---
 
@@ -1656,64 +1661,61 @@ Time complexity O(n) where n == count due to one construction and one registrati
 ### Signature
 
 ```python
-def make_events() -> Callable[[int, EventTopic], list[Event]]
+def make_events() -> Callable[[int, 'EventTopic'], list['Event']]
 ```
 
 ### Description
 
-Factory fixture that returns a function which generates a list of Event instances.
+Returns a factory function _make that, when called, constructs and returns a list of Event instances.
 
 
-make_events is a zero-argument factory function (commonly used as a pytest fixture) that defines and returns an inner function _make. The returned _make(count: int = 10, topic: EventTopic = EventTopic.SYSTEM) constructs and returns a list comprehension of Event objects. Each Event is created with source set to the literal "test-factory", topic set to the provided topic argument, action set to the string "action.{i}" where i is the event index, and payload set to a dict containing the index under the key 'index'. The factory itself does not perform any I/O or mutate external state; it only constructs and returns the inner function.
+make_events is a zero-argument factory fixture that defines and returns an inner function _make. The returned _make function accepts a count and a topic and constructs a list comprehension of Event(...) objects. Each Event has source set to the constant string 'test-factory', topic set to the provided topic, action set to 'action.{i}' where i ranges from 0 to count-1, and payload set to {'index': i}. make_events does not perform any I/O or mutate external state; it only builds and returns a callable used to produce test Event objects.
 
 ### Returns
 
 **Type:** `Callable[[int, EventTopic], list[Event]]`
 
-A function (_make) that when called produces a list of Event instances. _make accepts two parameters: count (number of events to generate) and topic (the EventTopic to assign to each Event).
+A factory function (_make) that when invoked creates a list of Event objects.
 
 
 **Possible Values:**
 
-- A callable that when invoked returns a list of Event objects.
-- When the returned callable is called with count=0, it returns an empty list.
-- Default behavior when calling the returned callable with no arguments: returns 10 Event objects with topic EventTopic.SYSTEM.
+- A callable that when called as _make() returns a list of 10 Event objects (default arguments).
+- A callable that when called as _make(5, some_topic) returns a list of 5 Event objects all with topic=some_topic.
 
 ### Usage Examples
 
-#### Generate the default 10 system events in a test fixture
+#### Generate the default 10 test events using the default topic
 
 ```python
-events_maker = make_events()
-events = events_maker()
+factory = make_events()
+events = factory()
 ```
 
-Returns a list of 10 Event objects with topic EventTopic.SYSTEM, actions 'action.0' .. 'action.9' and payloads {'index': i}.
+Obtains the _make factory from make_events and calls it with no args to get 10 Event instances with topic EventTopic.SYSTEM.
 
 #### Generate 3 events with a custom topic
 
 ```python
-events_maker = make_events()
-custom_events = events_maker(count=3, topic=EventTopic.CUSTOM)
+factory = make_events()
+events = factory(3, EventTopic.CUSTOM)
 ```
 
-Returns a list of 3 Event objects, each using the provided EventTopic.CUSTOM and the corresponding action and payload values.
+Creates 3 Event objects whose topic is EventTopic.CUSTOM; actions will be 'action.0', 'action.1', 'action.2'.
 
 ### Complexity
 
-Time complexity: O(count) to construct the list of events. Space complexity: O(count) for the returned list and its Event objects.
+Time: O(n) where n is the count argument passed to the returned _make (list comprehension iterates n times). Space: O(n) for the returned list of Event objects.
 
 ### Related Functions
 
-- `Event` - Type of objects created by the returned factory function; each item in the returned list is an Event instance.
-- `EventTopic` - Type used for the topic parameter of the inner _make function; defaults to EventTopic.SYSTEM.
+- `_make` - This inner function is defined inside make_events and is returned by make_events; _make is the factory used to create the list of Event objects.
 
 ### Notes
 
-- make_events itself takes no arguments and returns a factory function; tests typically call the returned function to generate events.
-- The source field of every generated Event is the fixed string 'test-factory'.
-- The action strings are deterministically derived from the index (f'action.{i}'), and payloads are simple dicts {'index': i}.
-- No validation is performed on the count or topic parameters in the inner function; passing negative counts will result in an empty list from range(count).
+- The outer make_events has no parameters and returns the inner factory function.
+- Default _make parameters are count=10 and topic=EventTopic.SYSTEM; types for Event and EventTopic come from the surrounding test codebase and are referenced but not defined in this snippet.
+- No validation is performed on the count or topic arguments inside _make; passing non-integer or negative counts will behave according to Python's range() semantics (e.g., negative count yields an empty list).
 
 ---
 
@@ -1731,64 +1733,64 @@ def _make(count: int = 10, topic: EventTopic = EventTopic.SYSTEM) -> list[Event]
 
 ### Description
 
-Create and return a list of Event objects built from the provided count and topic.
+Create and return a list of Event instances with sequentially numbered action names and simple payloads based on the provided count and topic.
 
 
-This function constructs a list comprehension that produces 'count' Event instances. Each Event is created with a fixed source value 'test-factory', the provided topic, an action string formatted as 'action.{i}' where i is the zero-based index, and a payload dictionary containing the index under the key 'index'. The function returns the list of constructed Event objects.
+This function constructs a list of Event objects using a list comprehension. For each integer i in range(count) it instantiates an Event with a fixed source value 'test-factory', the provided topic, an action string formatted as 'action.{i}', and a payload dictionary {'index': i}. The result is a list of count Event instances in ascending order of i.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `count` = `10` | `int` | ❌ | Number of Event instances to create and include in the returned list.
-<br>**Constraints:** Expected to be an integer (no runtime validation in function), If count is 0, an empty list is returned, Negative values follow Python range behavior (produces empty list for typical negative integers) |
-| `topic` = `EventTopic.SYSTEM` | `EventTopic` | ❌ | Topic value to assign to every constructed Event.
-<br>**Constraints:** Must be a value/instance acceptable to Event.topic (no validation in function) |
+| `count` = `10` | `int` | ❌ | Number of Event instances to create.
+ |
+| `topic` = `EventTopic.SYSTEM` | `EventTopic` | ❌ | Topic value assigned to each created Event; default is EventTopic.SYSTEM.
+ |
 
 ### Returns
 
 **Type:** `list[Event]`
 
-A list containing 'count' Event instances constructed with source 'test-factory', the provided topic, action strings 'action.0'..'action.{count-1}', and payloads {'index': i}.
+A list containing count Event objects. Each Event has source='test-factory', topic set to the provided topic, action set to 'action.{i}' where i is the index in the sequence, and payload {'index': i}.
 
 
 **Possible Values:**
 
-- List of length 'count' with Event objects
-- Empty list if count is 0 or if range(count) yields no elements
+- A list of length equal to count containing Event instances (e.g., count=3 -> [Event(action='action.0'), Event(action='action.1'), Event(action='action.2')])
+- An empty list when count is 0
 
 ### Usage Examples
 
-#### Create three test events with the default topic
+#### Create default 10 events with the default topic
 
 ```python
-_make(3)
+_make()
 ```
 
-Returns a list with Event(action='action.0', payload={'index': 0}), Event(action='action.1', payload={'index': 1}), and Event(action='action.2', payload={'index': 2}), all with source 'test-factory' and topic EventTopic.SYSTEM.
+Returns a list of 10 Event instances with actions 'action.0' through 'action.9', payloads {'index': 0} .. {'index': 9}, and source 'test-factory'.
 
-#### Create events with a custom topic
+#### Create 3 events with a custom topic
 
 ```python
-_make(2, topic=EventTopic.CUSTOM)
+_make(3, EventTopic.CUSTOM)
 ```
 
-Returns two Event instances with topic set to EventTopic.CUSTOM and actions 'action.0' and 'action.1'.
+Returns a list of 3 Event instances each having topic EventTopic.CUSTOM and actions 'action.0' .. 'action.2'.
 
 ### Complexity
 
-Time complexity O(n) where n is 'count' (each Event is constructed once). Space complexity O(n) for the returned list and the Event objects.
+Time: O(n) where n = count (each iteration constructs one Event). Space: O(n) for the returned list of Event objects.
 
 ### Related Functions
 
-- `Event` - Constructs instances of this class; the function calls Event(...) to create each element.
-- `EventTopic` - Uses this enum/type for the default 'topic' parameter and to assign the topic of each Event.
+- `Event` - This function constructs and returns instances of the Event class by calling its constructor.
+- `EventTopic` - Used as the type/default for the topic parameter and assigned to each Event's topic field.
 
 ### Notes
 
-- The function assumes Event and EventTopic are available in scope and that Event can be instantiated with the shown keyword arguments.
-- No input validation is performed; invalid types for 'count' or 'topic' will surface as normal Python errors from range() or Event constructor.
-- Action strings are deterministic and based solely on the loop index.
+- The source field of each Event is hard-coded to the string 'test-factory'.
+- The function relies on the Event constructor and EventTopic being available in scope; any errors from those are not handled here.
+- No validation is performed on count (e.g., negative values are not checked) — behavior for negative counts follows Python's range function (producing an empty list).
 
 ---
 
