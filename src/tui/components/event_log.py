@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
-from textual.app import ComposeResult
-from textual.containers import VerticalScroll
+from rich.markup import escape
 from textual.widgets import Label, RichLog, Static
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+
+_SEVERITY_STYLES = {
+    "info": "dim cyan",
+    "warn": "bold yellow",
+    "error": "bold red",
+    "fatal": "bold red reverse",
+    "debug": "dim",
+    "trace": "dim",
+}
 
 
 class EventLog(Static):
@@ -16,47 +28,37 @@ class EventLog(Static):
 
     def compose(self) -> ComposeResult:
         yield Label("Event Log", classes="panel-title")
-        yield RichLog(id="event-log", wrap=True, highlight=True, markup=True)
+        yield RichLog(id="event-log", wrap=True, highlight=False, markup=True)
 
     def append_event(
         self,
         kind: str,
         source: str,
         severity: str = "info",
-        data: dict | None = None,
+        data: dict[str, Any] | None = None,
         timestamp: datetime | None = None,
     ) -> None:
-        """Append a formatted event entry."""
+        """Append a formatted event entry (all event fields are escaped)."""
         log = self.query_one("#event-log", RichLog)
-        ts = timestamp or datetime.now()
+        ts = (timestamp or datetime.now(UTC)).astimezone()
         ts_str = ts.strftime("%H:%M:%S.%f")[:-3]
-
-        severity_styles = {
-            "info": "[dim cyan]",
-            "warn": "[bold yellow]",
-            "error": "[bold red]",
-            "debug": "[dim]",
-            "critical": "[bold red reverse]",
-        }
-        style = severity_styles.get(severity, "[dim]")
-        end_style = style.replace("[", "[/").replace("bold ", "").replace("dim ", "").replace("reverse", "")
-
-        text = f"[dim]{ts_str}[/dim] {style}{severity.upper():>5}{end_style} [{source}] {kind}"
-
+        style = _SEVERITY_STYLES.get(severity, "dim")
+        text = (
+            f"[dim]{ts_str}[/dim] [{style}]{escape(severity.upper()):>5}[/{style}] "
+            f"\\[{escape(source)}] {escape(kind)}"
+        )
         if data:
-            detail_parts = []
+            parts = []
             for k, v in data.items():
-                if isinstance(v, str) and len(v) > 50:
-                    v = v[:47] + "..."
-                detail_parts.append(f"{k}={v}")
-            if detail_parts:
-                text += f" [dim]({', '.join(detail_parts)})[/dim]"
-
+                value = str(v)
+                if len(value) > 50:
+                    value = value[:47] + "..."
+                parts.append(f"{k}={value}")
+            text += f" [dim]({escape(', '.join(parts))})[/dim]"
         log.write(text)
 
     def clear(self) -> None:
-        log = self.query_one("#event-log", RichLog)
-        log.clear()
+        self.query_one("#event-log", RichLog).clear()
 
     DEFAULT_CSS = """
     EventLog {

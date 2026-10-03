@@ -1,25 +1,27 @@
 """Super-MCP TUI Application — Textual-based keyboard-first interface.
 
 The TUI is the primary interaction surface: modular panes, live logs,
-status indicators, skill/tool browsers, game launcher, and full
-keyboard navigation.
+status indicators, skill/tool browsers, game launcher, full keyboard
+navigation, and a streaming chat with any configured model provider.
+
+Free text goes to the model (or to the active game); ``/commands`` drive
+the platform. Esc cancels a response that is still streaming.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING
 
-from textual.app import App, ComposeResult
+from rich.markup import escape
+from textual.app import App
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header
+from textual.widgets import TabbedContent
 
 from src.games.adventure.game import AdventureGame
 from src.games.dnd.game import DnDGame
-from src.games.engine.runner import GameRunner
-from src.games.engine.state import GameStateManager
+from src.games.engine.runner import GameOutput, GameRunner
 from src.games.zork.game import ZorkGame
 from src.kernel.kernel import Kernel
 from src.kernel.types import SessionState, Severity
@@ -30,8 +32,17 @@ from src.tui.components.output_pane import OutputPane
 from src.tui.components.sidebar import Sidebar
 from src.tui.components.status_bar import StatusBar
 
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+    from textual.worker import Worker
 
-class SuperMCPApp(App):
+    from src.harness.errors import HarnessError
+    from src.harness.session import ChatSession
+    from src.harness.types import Usage
+    from src.kernel.types import Event
+
+
+class SuperMCPApp(App[None]):
     """The Super-MCP Terminal User Interface."""
 
     TITLE = "Super-MCP"
@@ -57,7 +68,7 @@ class SuperMCPApp(App):
     }
     """
 
-    BINDINGS = [
+    BINDINGS = [  # noqa: RUF012 - Textual class-level declaration
         Binding("ctrl+q", "quit", "Quit", show=True),
         Binding("f1", "show_help", "Help", show=True),
         Binding("f2", "focus_tab('tab-skills')", "Skills", show=True),
@@ -66,17 +77,30 @@ class SuperMCPApp(App):
         Binding("f5", "toggle_events", "Events", show=True),
         Binding("ctrl+l", "clear_output", "Clear", show=False),
         Binding("ctrl+s", "toggle_sidebar", "Sidebar", show=False),
-        Binding("escape", "focus_input", "Input", show=False),
+        Binding("escape", "cancel_or_focus", "Cancel/Input", show=False, priority=True),
     ]
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        chat: ChatSession | None = None,
+        chat_unavailable: str | None = None,
+        initial_prompt: str | None = None,
+    ) -> None:
         super().__init__()
         self.kernel = Kernel()
-        self.game_runner = GameRunner()
+        self.game_runner = GameRunner(self.kernel.event_bus)
+        self.chat = chat
+        self._chat_unavailable = chat_unavailable
+        self._initial_prompt = initial_prompt
+        self._chat_worker: Worker[None] | None = None
         self._sidebar_visible = True
         self._events_visible = True
-        self._current_mode = "COMMAND"  # COMMAND, GAME, ONBOARDING
+        self._ui_mode = "COMMAND"  # COMMAND, GAME, ONBOARDING, STREAMING
         self._active_game: str | None = None
+        self._active_game_id: str | None = None
+        if chat is not None:
+            chat.provider.on_retry = self._on_provider_retry
 
     def compose(self) -> ComposeResult:
         yield HeaderBar()
@@ -90,25 +114,17 @@ class SuperMCPApp(App):
 
     async def on_mount(self) -> None:
         """Boot kernel and register event listeners."""
-        # Register games
-        self.game_runner.register_game("dnd", DnDGame())
-        self.game_runner.register_game("adventure", AdventureGame())
-        self.game_runner.register_game("zork", ZorkGame())
-
-        # Subscribe to kernel events for the live log
         self.kernel.event_bus.subscribe_all(self._on_kernel_event)
+        await self._register_games()
 
-        # Boot kernel
         await self.kernel.boot()
         await self.kernel.transition(SessionState.READY)
 
-        # Update header
         header = self.query_one(HeaderBar)
         header.session_state = "READY"
         header.skill_count = self.kernel.skill_registry.count
         header.tool_count = self.kernel.tool_registry.count
 
-        # Welcome message
         output = self.query_one(OutputPane)
         output.write_system(
             "═══════════════════════════════════════════════════════════\n"
@@ -120,37 +136,57 @@ class SuperMCPApp(App):
             f"Skills: {self.kernel.skill_registry.count}  "
             f"Tools: {self.kernel.tool_registry.count}\n"
         )
-        output.write_system(
-            "Commands:\n"
-            "  /skills          — List all registered skills\n"
-            "  /tools           — List all registered tools\n"
-            "  /status          — Show kernel status\n"
-            "  /onboard         — Run onboarding wizard\n"
-            "  /game <type>     — Launch a game (dnd, adventure, zork)\n"
-            "  /game quit       — Exit current game\n"
-            "  /checkpoint      — Create a checkpoint\n"
-            "  /events          — Show recent events\n"
-            "  /clear           — Clear output\n"
-            "  /help            — Show this help\n"
-        )
+        self._describe_chat(output)
+        output.write_system("Type a message to chat, or /help for commands.")
+        self._refresh_status()
 
-        # Focus input
-        input_bar = self.query_one(InputBar)
-        input_bar.focus_input()
+        self.query_one(InputBar).focus_input()
+        if self._initial_prompt and self.chat is not None:
+            self._start_chat(self._initial_prompt)
 
-    async def _on_kernel_event(self, event: Any) -> None:
-        """Forward kernel events to the event log."""
-        try:
-            event_log = self.query_one(EventLog)
-            event_log.append_event(
-                kind=event.kind,
-                source=event.source,
-                severity=event.severity.value if hasattr(event.severity, "value") else str(event.severity),
-                data=event.data,
-                timestamp=event.timestamp,
+    async def _register_games(self) -> None:
+        """Register each game independently so one broken game cannot block the TUI."""
+        for factory in (DnDGame, AdventureGame, ZorkGame):
+            try:
+                self.game_runner.register_game(factory())
+            except Exception as exc:  # noqa: BLE001 - report and continue
+                await self.kernel.event_bus.emit(
+                    "game.unavailable",
+                    "tui",
+                    {"game": factory.__name__, "error": f"{type(exc).__name__}: {exc}"},
+                    severity=Severity.WARN,
+                )
+
+    async def on_unmount(self) -> None:
+        """Stop any in-flight response and release the provider's connections."""
+        if self._chat_worker is not None and not self._chat_worker.is_finished:
+            self._chat_worker.cancel()
+        if self.chat is not None:
+            await self.chat.provider.aclose()
+
+    def _describe_chat(self, output: OutputPane) -> None:
+        if self.chat is not None:
+            p = self.chat.provider
+            output.write_system(
+                f"Model: {escape(p.name)} · {escape(p.model or '(no model set)')} "
+                f"@ {escape(p.endpoint)}"
             )
-        except Exception:
-            pass
+        else:
+            output.write_error(
+                f"Chat disabled: {self._chat_unavailable or 'no provider configured'}"
+            )
+
+    async def _on_kernel_event(self, event: Event) -> None:
+        """Forward kernel events to the event log."""
+        if not self.is_running:
+            return
+        self.query_one(EventLog).append_event(
+            kind=event.kind,
+            source=event.source,
+            severity=event.severity.value,
+            data=event.data,
+            timestamp=event.timestamp,
+        )
 
     # ── Command handling ─────────────────────────────────────────
 
@@ -158,21 +194,16 @@ class SuperMCPApp(App):
         """Route commands from the input bar."""
         command = event.command.strip()
         output = self.query_one(OutputPane)
+        output.write(f"[bold yellow]▶[/bold yellow] {escape(command)}")
 
-        # Echo input
-        output.write(f"[bold yellow]▶[/bold yellow] {command}")
-
-        if self._active_game and not command.startswith("/"):
-            # Forward to game
+        if self._active_game and (not command.startswith("/") or _is_game_meta(command)):
             await self._handle_game_input(command)
         elif command.startswith("/"):
             await self._handle_system_command(command)
         else:
-            output.write_system("Unknown command. Type /help for available commands.")
+            self._start_chat(command)
 
-        # Refocus input
-        input_bar = self.query_one(InputBar)
-        input_bar.focus_input()
+        self.query_one(InputBar).focus_input()
 
     async def _handle_system_command(self, command: str) -> None:
         """Handle /commands."""
@@ -181,51 +212,45 @@ class SuperMCPApp(App):
         cmd = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
 
-        if cmd == "/help":
-            await self._cmd_help()
-        elif cmd == "/status":
-            await self._cmd_status()
+        handlers = {
+            "/help": self._cmd_help,
+            "/status": self._cmd_status,
+            "/checkpoint": self._cmd_checkpoint,
+            "/events": self._cmd_events,
+            "/onboard": self._cmd_onboard,
+            "/model": self._cmd_model,
+            "/ping": self._cmd_ping,
+            "/reset": self._cmd_reset,
+            "/cancel": self._cmd_cancel,
+        }
+        if cmd in handlers:
+            await handlers[cmd]()
         elif cmd == "/skills":
             await self._cmd_skills(args)
         elif cmd == "/tools":
             await self._cmd_tools(args)
         elif cmd == "/game":
             await self._cmd_game(args)
-        elif cmd == "/onboard":
-            await self._cmd_onboard()
-        elif cmd == "/checkpoint":
-            await self._cmd_checkpoint()
-        elif cmd == "/events":
-            await self._cmd_events()
         elif cmd == "/clear":
             output.clear()
         elif cmd == "/quit":
-            if self._active_game:
-                self._active_game = None
-                self._current_mode = "COMMAND"
-                status = self.query_one(StatusBar)
-                status.mode = "COMMAND"
-                status.health_text = ""
-                input_bar = self.query_one(InputBar)
-                input_bar.set_prompt("▶ ")
-                output.write_system("Game ended. Returned to command mode.")
-            else:
-                self.exit()
+            self.exit()
         else:
-            output.write_system(f"Unknown command: {cmd}")
+            output.write_system(f"Unknown command: {escape(cmd)}")
 
     async def _cmd_help(self) -> None:
-        output = self.query_one(OutputPane)
-        output.write_system(
+        self.query_one(OutputPane).write_system(
             "═══ Super-MCP Commands ═══\n"
+            "  <text>              — Send a message to the model\n"
+            "  /model              — Show the active provider and model\n"
+            "  /ping               — Health-check the provider\n"
+            "  /reset              — Forget the chat history\n"
+            "  /cancel             — Stop the streaming response (also Esc)\n"
             "  /skills [filter]    — Browse skills\n"
             "  /tools [filter]     — Browse tools\n"
             "  /status             — Kernel status\n"
             "  /onboard            — Run onboarding\n"
-            "  /game dnd           — Launch D&D Quest\n"
-            "  /game adventure     — Launch Adventure\n"
-            "  /game zork          — Launch Ruins of Zyl\n"
-            "  /game quit          — Exit game\n"
+            "  /game dnd|adventure|zork — Launch a game; /quit inside a game ends it\n"
             "  /checkpoint         — Save checkpoint\n"
             "  /events             — Recent events\n"
             "  /clear              — Clear output\n"
@@ -233,13 +258,12 @@ class SuperMCPApp(App):
             "\nKeyboard:\n"
             "  F1: Help  F2: Skills  F3: Tools  F4: Games\n"
             "  F5: Toggle Events  Ctrl+S: Toggle Sidebar\n"
-            "  Ctrl+L: Clear  Ctrl+Q: Quit  Esc: Focus Input"
+            "  Ctrl+L: Clear  Ctrl+Q: Quit  Esc: Cancel stream / focus input"
         )
 
     async def _cmd_status(self) -> None:
-        output = self.query_one(OutputPane)
         status = self.kernel.status
-        output.write_system(
+        self.query_one(OutputPane).write_system(
             "═══ Kernel Status ═══\n"
             f"  Booted:      {status['booted']}\n"
             f"  Session:     {status['session_id']}\n"
@@ -249,63 +273,56 @@ class SuperMCPApp(App):
             f"  Checkpoints: {status['checkpoints']}\n"
             f"  Artifacts:   {status['artifacts']}\n"
             f"  Events:      {status['events_total']}\n"
-            f"  Safety:      {status['safety_stats']}"
+            f"  Safety:      {escape(str(status['safety_stats']))}"
         )
 
     async def _cmd_skills(self, filter_text: str = "") -> None:
         output = self.query_one(OutputPane)
         skills = self.kernel.skill_registry.list_all()
         if filter_text:
-            skills = [s for s in skills if filter_text.lower() in s.name.lower()
-                      or filter_text.lower() in s.slug]
-
+            needle = filter_text.lower()
+            skills = [s for s in skills if needle in s.name.lower() or needle in s.slug]
         if not skills:
             output.write_system("No skills found matching filter.")
             return
-
         output.write_system(f"═══ Skills ({len(skills)}) ═══")
-        for skill in skills[:50]:  # Show first 50
-            output.write(f"  [{skill.category.value:>12}] {skill.slug:<30} {skill.name}")
-
+        for skill in skills[:50]:
+            output.write_plain(f"  [{skill.category.value:>12}] {skill.slug:<35} {skill.name}")
         if len(skills) > 50:
-            output.write_system(f"  ... and {len(skills) - 50} more. Use /skills <filter> to narrow.")
+            output.write_system(
+                f"  ... and {len(skills) - 50} more. Use /skills <filter> to narrow."
+            )
 
     async def _cmd_tools(self, filter_text: str = "") -> None:
         output = self.query_one(OutputPane)
         tools = self.kernel.tool_registry.list_all()
         if filter_text:
-            tools = [t for t in tools if filter_text.lower() in t.name.lower()
-                     or filter_text.lower() in t.slug]
-
+            needle = filter_text.lower()
+            tools = [t for t in tools if needle in t.name.lower() or needle in t.slug]
         if not tools:
             output.write_system("No tools found matching filter.")
             return
-
         output.write_system(f"═══ Tools ({len(tools)}) ═══")
         for tool in tools[:50]:
-            health_icon = {"healthy": "●", "degraded": "◐", "down": "○"}.get(
-                tool.health.value if hasattr(tool.health, "value") else "unknown", "?"
-            )
-            output.write(f"  {health_icon} {tool.slug:<25} {tool.name}")
+            icon = {"healthy": "●", "degraded": "◐", "down": "○"}.get(tool.health.value, "?")
+            output.write_plain(f"  {icon} {tool.slug:<25} {tool.name}")
+
+    # ── Games ────────────────────────────────────────────────────
+
+    def _set_mode(self, mode: str) -> None:
+        self._ui_mode = mode
+        self._refresh_status()
 
     async def _cmd_game(self, args: str) -> None:
         output = self.query_one(OutputPane)
-        status = self.query_one(StatusBar)
-
-        if args == "quit" or args == "exit":
+        arg = args.strip().lower()
+        if arg in ("quit", "exit"):
             if self._active_game:
-                self._active_game = None
-                self._current_mode = "COMMAND"
-                status.mode = "COMMAND"
-                status.health_text = ""
-                input_bar = self.query_one(InputBar)
-                input_bar.set_prompt("▶ ")
-                output.write_system("Game ended.")
+                await self._handle_game_input("/quit")
             else:
                 output.write_system("No game is running.")
             return
-
-        if not args:
+        if not arg:
             output.write_system(
                 "Available games:\n"
                 "  /game dnd       — AI D&D Quest Engine\n"
@@ -313,104 +330,79 @@ class SuperMCPApp(App):
                 "  /game zork      — The Ruins of Zyl (Interactive Fiction)"
             )
             return
-
-        game_type = args.strip().lower()
-        if game_type not in self.game_runner._games:
-            output.write_error(f"Unknown game: {game_type}")
+        if arg not in self.game_runner.available_games():
+            output.write_error(f"Unknown game: {arg}")
+            return
+        if self._active_game:
+            output.write_system("A game is already running; /quit it first.")
             return
 
-        # Launch game
-        self._active_game = game_type
-        self._current_mode = "GAME"
-        status.mode = "GAME"
-
-        game = self.game_runner._games[game_type]
-        try:
-            intro = await game.initialize()
-            output.write_game(intro)
-
-            input_bar = self.query_one(InputBar)
-            input_bar.set_prompt("game▶ ")
-
-            await self.kernel.event_bus.emit(
-                kind="game.launched",
-                source="tui",
-                data={"game_type": game_type},
-            )
-        except Exception as e:
-            output.write_error(f"Failed to start game: {e}")
-            self._active_game = None
-            self._current_mode = "COMMAND"
-            status.mode = "COMMAND"
+        game_id, intro = await self.game_runner.start_game(arg)
+        if intro.error or not game_id:
+            output.write_error(f"Failed to start game: {intro.error}")
+            return
+        self._active_game = arg
+        self._active_game_id = game_id
+        self._set_mode("GAME")
+        self.query_one(InputBar).set_prompt("game▶ ")
+        self._write_game_output(intro)
 
     async def _handle_game_input(self, user_input: str) -> None:
         """Forward input to the active game."""
+        if not self._active_game_id:
+            return
+        result = await self.game_runner.process_turn(self._active_game_id, user_input)
+        self._write_game_output(result)
+        if result.game_over:
+            self._active_game = None
+            self._active_game_id = None
+            self.query_one(InputBar).set_prompt("▶ ")
+            self._set_mode("COMMAND")
+            self.query_one(OutputPane).write_system("Game ended. Returned to command mode.")
+
+    def _write_game_output(self, result: GameOutput) -> None:
         output = self.query_one(OutputPane)
+        if result.narrative:
+            output.write_game(result.narrative)
+        if result.error and result.error != result.narrative:
+            output.write_error(result.error)
 
-        if not self._active_game:
-            return
-
-        game = self.game_runner._games.get(self._active_game)
-        if not game:
-            return
-
-        try:
-            response = await game.process_input(user_input)
-            output.write_game(response)
-
-            # Update health in status bar for games that have it
-            if hasattr(game, "health") and hasattr(game, "max_health"):
-                status = self.query_one(StatusBar)
-                status.health_text = f"HP: {game.health}/{game.max_health}"
-
-        except Exception as e:
-            output.write_error(f"Game error: {e}")
+    # ── Onboarding / checkpoints / events ───────────────────────
 
     async def _cmd_onboard(self) -> None:
+        from src.onboarding.engine import OnboardingEngine
+
         output = self.query_one(OutputPane)
-        status = self.query_one(StatusBar)
-        status.mode = "ONBOARDING"
-
+        self._set_mode("ONBOARDING")
         output.write_system("Starting onboarding...")
-
         try:
-            from src.onboarding.engine import OnboardingEngine
-
-            engine = OnboardingEngine(self.kernel)
-            report = await engine.run()
-
-            output.write_system("═══ Onboarding Report ═══")
-            for step in report.steps:
-                icon = "✓" if step.success else "✗"
-                color = "green" if step.success else "red"
-                output.write(f"  [{color}]{icon}[/{color}] {step.step_name} ({step.duration_ms:.0f}ms)")
-                if step.warnings:
-                    for w in step.warnings:
-                        output.write(f"    [yellow]⚠ {w}[/yellow]")
-
-            output.write_system(
-                f"\nTotal: {report.total_duration_ms:.0f}ms  "
-                f"Success: {sum(1 for s in report.steps if s.success)}/{len(report.steps)}"
+            report = await OnboardingEngine(self.kernel).run()
+        except Exception as exc:  # noqa: BLE001 - surface any onboarding failure in the UI
+            output.write_error(f"Onboarding failed: {exc}")
+            self._set_mode("COMMAND")
+            return
+        output.write_system("═══ Onboarding Report ═══")
+        for step in report.steps:
+            icon, color = ("✓", "green") if step.success else ("✗", "red")
+            output.write(
+                f"  [{color}]{icon}[/{color}] {escape(step.step.value)} ({step.duration_ms:.0f}ms)"
             )
-
-            # Update header counts
-            header = self.query_one(HeaderBar)
-            header.skill_count = self.kernel.skill_registry.count
-            header.tool_count = self.kernel.tool_registry.count
-            header.session_state = self.kernel.session.state.value
-
-        except Exception as e:
-            output.write_error(f"Onboarding failed: {e}")
-
-        status.mode = "COMMAND"
+            for w in step.warnings:
+                output.write_plain(f"    ⚠ {w}", "yellow")
+        total_ms = sum(s.duration_ms for s in report.steps)
+        ok = sum(1 for s in report.steps if s.success)
+        output.write_system(f"\nTotal: {total_ms:.0f}ms  Success: {ok}/{len(report.steps)}")
+        header = self.query_one(HeaderBar)
+        header.skill_count = self.kernel.skill_registry.count
+        header.tool_count = self.kernel.tool_registry.count
+        header.session_state = self.kernel.session.state.value
+        self._set_mode("COMMAND")
 
     async def _cmd_checkpoint(self) -> None:
-        output = self.query_one(OutputPane)
-        state = {"mode": self._current_mode, "active_game": self._active_game}
+        state = {"mode": self._ui_mode, "active_game": self._active_game}
         cp = await self.kernel.checkpoint(state)
-        output.write_success(
-            f"Checkpoint created: {cp.id}\n"
-            f"  Sequence: {cp.sequence}  Checksum: {cp.checksum}"
+        self.query_one(OutputPane).write_success(
+            f"Checkpoint created: {cp.id}\n  Sequence: {cp.sequence}  Checksum: {cp.checksum}"
         )
 
     async def _cmd_events(self) -> None:
@@ -419,20 +411,165 @@ class SuperMCPApp(App):
         output.write_system(f"═══ Recent Events ({len(events)}) ═══")
         for ev in events:
             ts = ev.timestamp.strftime("%H:%M:%S")
-            output.write(f"  [{ts}] {ev.severity.value:>5} [{ev.source}] {ev.kind}")
+            output.write_plain(f"  [{ts}] {ev.severity.value:>5} [{ev.source}] {ev.kind}")
+
+    # ── Chat ─────────────────────────────────────────────────────
+
+    @property
+    def chat_busy(self) -> bool:
+        return self._chat_worker is not None and not self._chat_worker.is_finished
+
+    def _start_chat(self, text: str) -> None:
+        output = self.query_one(OutputPane)
+        if self.chat is None:
+            output.write_error(
+                f"Chat disabled: {self._chat_unavailable or 'no provider configured'}. "
+                "Relaunch with --provider/--model or create a providers.toml."
+            )
+            return
+        if self.chat_busy:
+            output.write_system("Still answering — press Esc to cancel first.")
+            return
+        self._chat_worker = self.run_worker(
+            self._run_chat(text), name="chat", group="chat", exit_on_error=False
+        )
+
+    async def _run_chat(self, text: str) -> None:
+        from src.harness.errors import HarnessError
+        from src.harness.types import Finish, TextDelta, ToolCallDelta
+        from src.harness.types import Usage as UsageT
+
+        assert self.chat is not None  # noqa: S101 - guarded by _start_chat
+        session = self.chat
+        provider = session.provider
+        output = self.query_one(OutputPane)
+        bus = self.kernel.event_bus
+        label = f"{provider.model or provider.name}›"
+        output.begin_stream(label)
+        self._set_mode("STREAMING")
+        await bus.emit(
+            "llm.request", "harness", {"provider": provider.name, "model": provider.model}
+        )
+        usage = UsageT()
+        finish = "incomplete"
+        outcome = "completed"
+        try:
+            async for event in session.stream_turn(text):
+                if isinstance(event, TextDelta):
+                    output.append_stream(event.text)
+                elif isinstance(event, ToolCallDelta):
+                    if event.name:
+                        output.append_stream(f"\n⚙ tool call: {event.name}(")
+                    if event.arguments:
+                        output.append_stream(event.arguments)
+                elif isinstance(event, UsageT):
+                    usage = usage.merge(event)
+                    self._refresh_status(usage)
+                elif isinstance(event, Finish):
+                    finish = event.reason
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            output.end_stream("[cancelled]")
+            await bus.emit("llm.cancelled", "harness", {"provider": provider.name})
+            raise
+        except HarnessError as err:
+            outcome = "error"
+            output.end_stream("[failed]")
+            output.write_error(f"{type(err).__name__}: {err}")
+            await bus.emit(
+                "llm.error",
+                "harness",
+                {"provider": provider.name, "error": type(err).__name__},
+                severity=Severity.ERROR,
+            )
+        else:
+            suffix = "" if finish in ("stop", "tool_calls") else f"[finish: {finish}]"
+            output.end_stream(suffix)
+            await bus.emit(
+                "llm.completed",
+                "harness",
+                {
+                    "provider": provider.name,
+                    "finish": finish,
+                    "in": usage.input_tokens,
+                    "out": usage.output_tokens,
+                },
+            )
+        finally:
+            if output.streaming:
+                output.end_stream()
+            self._set_mode("GAME" if self._active_game else "COMMAND")
+            self._refresh_status(usage if outcome == "completed" else None)
+
+    def _on_provider_retry(self, err: HarnessError, attempt: int, delay: float) -> None:
+        if self.is_running:
+            self.query_one(
+                StatusBar
+            ).health_text = f"{type(err).__name__}: retry {attempt} in {delay:.1f}s"
+
+    def _refresh_status(self, last: Usage | None = None) -> None:
+        if not self.is_running:
+            return
+        status = self.query_one(StatusBar)
+        status.mode = self._ui_mode
+        if self.chat is None:
+            status.health_text = "chat: off"
+            return
+        p = self.chat.provider
+        total = self.chat.total_usage
+        parts = [f"{p.name}:{p.model or '?'}"]
+        if last is not None and last.total_tokens:
+            parts.append(f"last {last.input_tokens}→{last.output_tokens}")
+        if total.total_tokens:
+            parts.append(f"session {total.total_tokens} tok")
+        status.health_text = " · ".join(parts)
+
+    async def _cmd_model(self) -> None:
+        self._describe_chat(self.query_one(OutputPane))
+
+    async def _cmd_ping(self) -> None:
+        output = self.query_one(OutputPane)
+        if self.chat is None:
+            self._describe_chat(output)
+            return
+        report = await self.chat.provider.check_health()
+        line = (
+            f"{report.provider} @ {report.endpoint}: "
+            f"{'reachable' if report.ok else 'FAILED'} ({report.latency_ms:.0f} ms) — "
+            f"{report.detail}"
+        )
+        if report.ok:
+            output.write_plain(line, "bold green")
+        else:
+            output.write_error(line)
+
+    async def _cmd_reset(self) -> None:
+        if self.chat is not None:
+            if self.chat_busy:
+                await self._cmd_cancel()
+            self.chat.reset()
+            self.query_one(OutputPane).write_system("Chat history cleared.")
+
+    async def _cmd_cancel(self) -> None:
+        if self.chat_busy and self._chat_worker is not None:
+            self._chat_worker.cancel()
+            await self.workers.wait_for_complete([self._chat_worker])
+        else:
+            self.query_one(OutputPane).write_system("Nothing is streaming.")
 
     # ── Actions ──────────────────────────────────────────────────
 
-    def action_show_help(self) -> None:
-        asyncio.create_task(self._cmd_help())
+    async def action_cancel_or_focus(self) -> None:
+        if self.chat_busy and self._chat_worker is not None:
+            self._chat_worker.cancel()
+        else:
+            self.query_one(InputBar).focus_input()
+
+    async def action_show_help(self) -> None:
+        await self._cmd_help()
 
     def action_focus_tab(self, tab_id: str) -> None:
-        try:
-            from textual.widgets import TabbedContent
-            tabs = self.query_one("#sidebar-tabs", TabbedContent)
-            tabs.active = tab_id
-        except Exception:
-            pass
+        self.query_one("#sidebar-tabs", TabbedContent).active = tab_id
 
     def action_toggle_events(self) -> None:
         event_log = self.query_one(EventLog)
@@ -445,15 +582,24 @@ class SuperMCPApp(App):
         sidebar.display = self._sidebar_visible
 
     def action_clear_output(self) -> None:
-        output = self.query_one(OutputPane)
-        output.clear()
+        self.query_one(OutputPane).clear()
 
     def action_focus_input(self) -> None:
-        input_bar = self.query_one(InputBar)
-        input_bar.focus_input()
+        self.query_one(InputBar).focus_input()
 
 
-def run_tui() -> None:
+_GAME_META = {"/help", "/save", "/load", "/undo", "/redo", "/status", "/quit", "/replay"}
+
+
+def _is_game_meta(command: str) -> bool:
+    return command.split(maxsplit=1)[0].lower() in _GAME_META
+
+
+def run_tui(
+    *,
+    chat: ChatSession | None = None,
+    chat_unavailable: str | None = None,
+    initial_prompt: str | None = None,
+) -> None:
     """Entry point for the TUI."""
-    app = SuperMCPApp()
-    app.run()
+    SuperMCPApp(chat=chat, chat_unavailable=chat_unavailable, initial_prompt=initial_prompt).run()
