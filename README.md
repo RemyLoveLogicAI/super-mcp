@@ -70,10 +70,13 @@ smcp play zork       # The Ruins of Zyl
 All commands are available via `super-mcp` or the `smcp` alias.
 
 ```
-smcp [COMMAND]
+smcp [PROVIDER OPTIONS] [COMMAND]
 
 Commands:
   tui               Launch the terminal UI (default)
+  start [PROMPT]    Chat with a model: TUI when interactive, plain stream when piped
+  ping              Health-check the selected provider endpoint and model
+  providers         List provider presets and configured profiles
   onboard           Run the onboarding wizard
   play TYPE         Start a game (dnd | adventure | zork)
   skills            List registered skills
@@ -82,6 +85,15 @@ Commands:
   generate-skills   Generate Skill.md files to disk
   export-report     Export a session analytics report
   metrics           Display observability metrics
+
+Provider options (apply to tui, start, ping, providers):
+  -p, --provider    ollama | lmstudio | vllm | openai | anthropic |
+                    openai-compatible | <profile from providers.toml>   [$SMCP_PROVIDER]
+  -m, --model       Model identifier                                    [$SMCP_MODEL]
+  -e, --endpoint    Override the base URL
+  -c, --config      providers.toml path
+  --api-key-env     Read the key from this env var (or VAR_FILE)
+  --api-key-file    Read the key from this file
 
 Options:
   --help            Show help for any command
@@ -94,6 +106,76 @@ smcp skills --filter "security"    # Filter skills by tag
 smcp tools --filter "github"       # Filter tools by name
 smcp generate-skills --output-dir ./my-skills
 smcp export-report --output report.json
+```
+
+---
+
+## Model Providers
+
+The TUI and `smcp start` talk to any OpenAI-compatible endpoint (OpenAI, Ollama,
+LM Studio, vLLM, gateways) and to Anthropic's native Messages API through one
+streaming harness in `src/harness/`.
+
+| Preset | Kind | Default endpoint | Key variable |
+|---|---|---|---|
+| `ollama` (default) | OpenAI-compatible | `http://localhost:11434/v1` | `OLLAMA_API_KEY` (optional) |
+| `lmstudio` | OpenAI-compatible | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) |
+| `vllm` | OpenAI-compatible | `http://localhost:8000/v1` | `VLLM_API_KEY` (optional) |
+| `openai` | OpenAI-compatible | `https://api.openai.com/v1` | `OPENAI_API_KEY` (required) |
+| `anthropic` | Anthropic Messages | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` (required) |
+| `openai-compatible` | OpenAI-compatible | set `--endpoint` / `base_url` | `SMCP_LLM_API_KEY` (optional) |
+
+```bash
+smcp -p ollama -m qwen2.5:0.5b ping                    # endpoint + model check
+smcp -p ollama -m qwen2.5:0.5b start                   # streaming chat in the TUI
+smcp -p anthropic -m claude-sonnet-4-5 start "Plan the migration"   # plain stream
+git diff | smcp -p lmstudio -m qwen3-8b start "Review this diff"     # PROMPT + stdin
+smcp providers                                          # what is configured, key status
+```
+
+**Keys.** Each profile reads only its own variable, its `*_FILE` twin (a path to a
+one-line file, e.g. a Docker/K8s secret), or an `api_key_file`. A local provider
+never picks up `OPENAI_API_KEY`, and no `Authorization` header is sent when there
+is no key. Keys are never printed or logged, plaintext keys are rejected in the
+config file, and plain `http://` is only allowed for loopback hosts unless a
+profile sets `allow_insecure_http = true`.
+
+**Config file.** `$SMCP_PROVIDERS_FILE` or `~/.config/super-mcp/providers.toml`
+(see [`providers.example.toml`](providers.example.toml)). CLI flags override the
+profile, which overrides the preset.
+
+**Behaviour.**
+- Streaming SSE parser tolerant of keep-alives, comments, CRLF, split chunks and
+  servers that omit `[DONE]`; non-JSON lines are skipped, error events raise.
+- Typed errors: `AuthenticationError` (exit 3), `ProviderTimeoutError` /
+  `ProviderConnectionError` (exit 4), `RateLimitError` (exit 5), `ProviderHTTPError` /
+  `BadResponseError` (exit 6), `ConfigError` (exit 2). Cancelled with Ctrl+C: exit 130.
+- Retries with exponential backoff and jitter on connect errors, timeouts, 408, 429
+  (honouring `Retry-After`) and 5xx; never on other 4xx, and never after the first
+  token has streamed.
+- Token usage (`stream_options.include_usage` for OpenAI-compatible servers, native
+  usage events for Anthropic) shown in the TUI status bar and by `start --show-usage`.
+- Tool-call deltas are passed through as `ToolCallDelta` events and assembled into
+  `ToolCall`s on the assistant turn (the TUI and CLI display them; no tool is executed).
+- Cancellation closes the HTTP stream immediately, so servers stop generating.
+
+**In the TUI** free text goes to the model; tokens stream into the output pane, the
+status bar shows `STREAMING`, provider, model and token counts, and kernel events
+`llm.request / llm.completed / llm.error / llm.cancelled` appear in the event log.
+`Esc` or `/cancel` stops a response; `/model`, `/ping` and `/reset` manage the session.
+If no provider resolves (e.g. a required key is missing) the TUI still starts with
+chat disabled and says why.
+
+**Embedding.**
+
+```python
+from src.harness import ChatSession, HarnessConfig, build_provider, resolve_profile
+
+profile = resolve_profile(HarnessConfig.load(), "ollama", model="qwen2.5:0.5b")
+async with build_provider(profile) as provider:
+    session = ChatSession(provider, system_prompt="Be brief.")
+    async for event in session.stream_turn("Hello"):
+        ...  # TextDelta | ToolCallDelta | Usage | Finish
 ```
 
 ---
@@ -114,12 +196,17 @@ The TUI is the primary interface. It combines a sidebar browser, output pane, ev
 | `Ctrl+S` | Toggle Sidebar |
 | `Ctrl+L` | Clear output |
 | `Ctrl+Q` | Quit |
-| `Esc` | Focus input bar |
+| `Esc` | Cancel a streaming response, otherwise focus input bar |
 
 ### Slash Commands
 
 | Command | Description |
 |---|---|
+| `<text>` | Send a message to the model |
+| `/model` | Show the active provider, model and endpoint |
+| `/ping` | Health-check the provider |
+| `/reset` | Clear the chat history |
+| `/cancel` | Stop the streaming response |
 | `/help` | Show available commands |
 | `/skills` | List all loaded skills |
 | `/tools` | List all registered tools |
@@ -131,7 +218,7 @@ The TUI is the primary interface. It combines a sidebar browser, output pane, ev
 | `/clear` | Clear output pane |
 | `/quit` | Exit the TUI |
 
-When a game is active, any non-slash input is forwarded to the game engine. Type `/quit` to exit the game and return to command mode.
+When a game is active, any non-slash input (and the game commands `/save`, `/load`, `/undo`, `/redo`, `/status`, `/replay`) is forwarded to the game engine. Type `/quit` to exit the game and return to command mode. Outside a game, free text goes to the model.
 
 ---
 
@@ -217,7 +304,12 @@ pytest                        # Run all tests
 pytest --cov=src              # With coverage
 pytest -m "not slow"          # Skip slow tests
 pytest tests/unit/            # Unit tests only
+pytest -m integration -rs     # Live provider tests (skipped with a reason if no server)
 ```
+
+The live tests default to Ollama at `http://localhost:11434/v1` with `qwen2.5:0.5b`
+(`ollama pull qwen2.5:0.5b`); point them elsewhere with `SMCP_IT_ENDPOINT` and
+`SMCP_IT_MODEL`.
 
 ### Lint & Type Check
 
@@ -239,7 +331,8 @@ smcp generate-skills --output-dir ./skills
 
 ```
 src/
-├── cli.py                     # Click CLI entry point
+├── cli.py                     # Click CLI entry point (incl. start / ping / providers)
+├── harness/                   # Model provider harness: config, SSE, retries, OpenAI-compatible, Anthropic
 ├── kernel/                    # Core: types, event bus, registries, safety, kernel
 ├── skills/                    # Skill loader and 120-skill catalog generator
 ├── tools/                     # Tool registry (54 tools) and OAuth2+PKCE manager

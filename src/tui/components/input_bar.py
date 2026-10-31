@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from textual.app import ComposeResult
+from typing import TYPE_CHECKING
+
 from textual.message import Message
 from textual.widgets import Input, Label, Static
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
 
 
 class InputBar(Static):
@@ -15,15 +19,15 @@ class InputBar(Static):
             self.command = command
             super().__init__()
 
-    def __init__(self, prompt: str = "▶ ", **kwargs: object) -> None:
-        super().__init__(**kwargs)
+    def __init__(self, prompt: str = "▶ ", *, id: str | None = None) -> None:  # noqa: A002
+        super().__init__(id=id)
         self._prompt = prompt
         self._history: list[str] = []
         self._history_index: int = -1
 
     def compose(self) -> ComposeResult:
         yield Label(self._prompt, id="input-prompt")
-        yield Input(placeholder="Enter command...", id="command-input")
+        yield Input(placeholder="Message the model, or /help for commands...", id="command-input")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle command submission."""
@@ -37,19 +41,13 @@ class InputBar(Static):
     def set_prompt(self, prompt: str) -> None:
         """Update the prompt text."""
         self._prompt = prompt
-        try:
-            label = self.query_one("#input-prompt", Label)
-            label.update(prompt)
-        except Exception:
-            pass
+        if self.is_mounted:
+            self.query_one("#input-prompt", Label).update(prompt)
 
     def focus_input(self) -> None:
         """Focus the input field."""
-        try:
-            inp = self.query_one("#command-input", Input)
-            inp.focus()
-        except Exception:
-            pass
+        if self.is_mounted:
+            self.query_one("#command-input", Input).focus()
 
     DEFAULT_CSS = """
     InputBar {

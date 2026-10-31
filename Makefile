@@ -104,6 +104,14 @@ test: ## Run test suite
 test-fast: ## Run tests (no slow markers)
 	$(PYTEST) tests/ -v --tb=short -m "not slow"
 
+.PHONY: test-integration
+test-integration: ## Live provider tests (needs a local endpoint, e.g. ollama pull qwen2.5:0.5b)
+	$(PYTEST) tests/integration -m integration -rs -v
+
+.PHONY: ping
+ping: ## Health-check the configured model provider
+	$(APP) ping
+
 .PHONY: test-cov
 test-cov: ## Run tests with coverage report
 	$(PYTEST) tests/ -v --tb=short \

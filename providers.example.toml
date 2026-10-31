@@ -1,0 +1,38 @@
+# Super-MCP provider profiles.
+# Copy to ~/.config/super-mcp/providers.toml (or point $SMCP_PROVIDERS_FILE at it).
+# Precedence: CLI flags > profile here > built-in preset.
+# Keys never go in this file: use api_key_env (also reads <VAR>_FILE) or api_key_file.
+
+default = "local"
+
+[providers.local]
+preset = "ollama"                 # http://localhost:11434/v1
+model = "qwen2.5:0.5b"
+
+[providers.studio]
+preset = "lmstudio"               # http://localhost:1234/v1
+model = "qwen3-8b"
+
+[providers.gpu]
+preset = "vllm"
+base_url = "http://localhost:8000/v1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+read_timeout = 300                # seconds of silence tolerated mid-stream
+
+[providers.claude]
+preset = "anthropic"              # reads ANTHROPIC_API_KEY or ANTHROPIC_API_KEY_FILE
+model = "claude-sonnet-4-5"
+default_max_tokens = 8192
+
+[providers.gpt]
+preset = "openai"                 # reads OPENAI_API_KEY or OPENAI_API_KEY_FILE
+model = "gpt-4.1-mini"
+
+[providers.gateway]
+kind = "openai"                   # any OpenAI-compatible base URL
+base_url = "https://llm-gateway.example.com/v1"
+api_key_env = "GATEWAY_API_KEY"
+model = "default"
+headers = { "X-Team" = "lovelogic" }
+stream_usage = false              # set false if the server rejects stream_options
+max_retries = 5
